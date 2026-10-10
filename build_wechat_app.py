@@ -24,7 +24,11 @@ SPEC_PATH = ROOT / "wechat_downloader.spec"
 def make_icon() -> None:
     ICON_PNG.parent.mkdir(parents=True, exist_ok=True)
     render_size = 2048
-    size = 1024
+    final_size = 1024
+    # macOS composites edge-touching alpha icons with a visible halo. Keep the
+    # artwork inside the platform's icon safe area instead of filling the canvas.
+    body_size = 1664
+    body_offset = (render_size - body_size) // 2
     image = Image.new("RGBA", (render_size, render_size), (0, 0, 0, 0))
 
     radius = 448
@@ -144,7 +148,12 @@ def make_icon() -> None:
         fill=(4, 154, 82, 250),
     )
 
-    image = image.resize((size, size), Image.Resampling.LANCZOS)
+    icon_canvas = Image.new("RGBA", (render_size, render_size), (0, 0, 0, 0))
+    icon_canvas.alpha_composite(
+        image.resize((body_size, body_size), Image.Resampling.LANCZOS),
+        (body_offset, body_offset),
+    )
+    image = icon_canvas.resize((final_size, final_size), Image.Resampling.LANCZOS)
 
     if ICONSET.exists():
         shutil.rmtree(ICONSET)
@@ -224,8 +233,8 @@ app = BUNDLE(
     info_plist={{
         'CFBundleDisplayName': 'WeChatDownloader',
         'CFBundleName': 'WeChatDownloader',
-        'CFBundleShortVersionString': '1.0.3',
-        'CFBundleVersion': '1.0.3',
+        'CFBundleShortVersionString': '1.0.4',
+        'CFBundleVersion': '1.0.4',
         'LSMinimumSystemVersion': '10.13',
         'LSApplicationCategoryType': 'public.app-category.utilities',
         'NSHighResolutionCapable': True,
