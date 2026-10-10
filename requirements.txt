@@ -1,0 +1,4 @@
+pywebview>=5.0
+mitmproxy>=10
+pyinstaller>=6.0
+pillow>=10.0

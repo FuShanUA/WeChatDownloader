@@ -1,0 +1,15 @@
+.DS_Store
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.log
+*.mp4
+*.part
+*.sidecar.json
+wechat-captures*.jsonl
+wechat_capture_token
+vendor/
+outputs/
