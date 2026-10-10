@@ -733,6 +733,8 @@ class WeChatCapture:
         self.capture_thread: threading.Thread | None = None
         self.proxy_watchdog_stop = threading.Event()
         self.proxy_watchdog_thread: threading.Thread | None = None
+        self.service_lock = threading.Lock()
+        self.capture_enabled = True
         self.write_lock = threading.Lock()
         # mitmproxy callbacks and the capture HTTP server run on different
         # threads. The UI reads these containers, so mutations need one lock.
@@ -865,6 +867,49 @@ class WeChatCapture:
         self.proxy_manager.restore()
         self._write({"event": "system_proxy_restored", "service": service})
         ctx.log.info(f"Restored macOS system proxy on {service}")
+
+    def set_capture_enabled(self, enabled: bool) -> None:
+        """Pause or resume system-proxy capture without stopping the Web UI."""
+        enabled = bool(enabled)
+        with self.service_lock:
+            if enabled == self.capture_enabled:
+                return
+
+            if not enabled:
+                self.proxy_watchdog_stop.set()
+                if self.proxy_watchdog_thread is not None:
+                    self.proxy_watchdog_thread.join(timeout=3)
+                    self.proxy_watchdog_thread = None
+                self._restore_proxy()
+                self.capture_enabled = False
+                self._write({
+                    "event": "capture_status",
+                    "capture_enabled": False,
+                    "proxy_configured": False,
+                })
+                return
+
+            if self.proxy_manager is None:
+                self.capture_enabled = True
+                self._write({
+                    "event": "capture_status",
+                    "capture_enabled": True,
+                    "proxy_configured": False,
+                })
+                return
+
+            self.proxy_manager.configure()
+            self.proxy_watchdog_stop.clear()
+            self.proxy_watchdog_thread = threading.Thread(
+                target=self._watch_proxy, name="wx-proxy-watchdog", daemon=True
+            )
+            self.proxy_watchdog_thread.start()
+            self.capture_enabled = True
+            self._write({
+                "event": "capture_status",
+                "capture_enabled": True,
+                "proxy_configured": self.proxy_manager.changed,
+            })
 
     def _watch_proxy(self) -> None:
         """Keep the temporary system proxy alive while capture is running."""

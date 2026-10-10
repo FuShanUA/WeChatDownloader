@@ -281,6 +281,21 @@ button {
   background: var(--surface-2);
 }
 
+.rail-action.service-toggle.off {
+  border-color: rgba(7, 193, 96, 0.38);
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.rail-action.service-toggle.off svg {
+  color: var(--primary);
+}
+
+.rail-action:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 /* ---------------------------------------------------------------- workspace */
 .workspace {
   display: flex;

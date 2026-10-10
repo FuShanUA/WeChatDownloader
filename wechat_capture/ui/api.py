@@ -20,6 +20,7 @@ GET  /api/tasks                          download tasks
 GET  /api/events                         SSE stream
 GET  /api/log?tail=200                   tail of the capture log
 POST /api/videos/<key>/download          {"quality": "best"}
+POST /api/service                        {"enabled": true|false}
 POST /api/selftest                       run the decryptor's self-test
 """
 
@@ -42,7 +43,7 @@ from . import downloads as dl
 # Bumped whenever a UI behaviour changes. Exposed over the API and the SSE
 # hello frame so a stale browser tab or an un-restarted mitmdump can be
 # detected instead of silently showing wrong results.
-UI_VERSION = 10
+UI_VERSION = 11
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 JSON_TYPE = "application/json; charset=utf-8"
@@ -192,6 +193,11 @@ class Router:
             payload = {"type": "download", "task": {k: v for k, v in record.items() if k != "event"}}
         elif event == "session_start":
             payload = {"type": "session", "session": {k: v for k, v in record.items() if k != "event"}}
+        elif event == "capture_status":
+            payload = {"type": "service", "service": {
+                "capture_enabled": record.get("capture_enabled"),
+                "proxy_configured": record.get("proxy_configured"),
+            }}
         else:
             return
         self.broadcaster.publish(payload)
@@ -250,6 +256,8 @@ class Router:
                     return Response.error(405, "use GET for this action")
             if route == "/api/selftest":
                 return self.selftest()
+            if route == "/api/service":
+                return self.set_service(body)
         return None
 
     @staticmethod
@@ -291,6 +299,7 @@ class Router:
                 "proxy_port": owner.proxy_port,
                 "proxy_configured": bool(proxy_manager and proxy_manager.changed),
                 "proxy_service": proxy_manager.service if proxy_manager else "",
+                "capture_enabled": owner.capture_enabled,
             },
             "counters": counters,
             "ui_version": UI_VERSION,
@@ -506,6 +515,29 @@ class Router:
         except KeyError as exc:
             return Response.error(404, str(exc))
         return Response.json({"ok": True, "task": task.as_dict()})
+
+    def set_service(self, body: bytes) -> Response:
+        try:
+            payload = json.loads(body.decode("utf-8")) if body else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return Response.error(400, "invalid json body")
+        if "enabled" not in payload:
+            return Response.error(400, "enabled is required")
+
+        enabled = bool(payload["enabled"])
+        try:
+            self.owner.set_capture_enabled(enabled)
+        except Exception as exc:
+            return Response.error(500, f"could not change capture service: {exc}")
+
+        manager = self.owner.proxy_manager
+        return Response.json({
+            "ok": True,
+            "service": {
+                "capture_enabled": self.owner.capture_enabled,
+                "proxy_configured": bool(manager and manager.changed),
+            },
+        })
 
     def selftest(self) -> Response:
         decryptor = self.owner.decryptor

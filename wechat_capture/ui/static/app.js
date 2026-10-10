@@ -11,7 +11,7 @@
 // Must match UI_VERSION in api.py. A mismatch means the tab is running an old
 // script against a newer backend (or the reverse), which silently produces
 // wrong results — so it reloads instead.
-const APP_VERSION = 10;
+const APP_VERSION = 11;
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -28,6 +28,7 @@ const state = {
   playingVariant: null,
   qualityChoices: {},
   previewRequests: {},
+  serviceBusy: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -200,6 +201,7 @@ function renderTabs() {
 }
 
 function renderStatus() {
+  const serviceEnabled = state.session?.capture_enabled !== false;
   const hook = state.hook || {};
   const bridgeActive = Boolean(hook.wrapped || state.counters['report:bridge_request']);
   const injected = Boolean(
@@ -208,7 +210,7 @@ function renderStatus() {
     || bridgeActive,
   );
   const dots = [
-    ['代理', state.proxyOk],
+    ['代理', serviceEnabled && state.proxyOk],
     ['注入', injected],
     ['桥', bridgeActive],
     ['上报', state.counters['report:media'] || hook.reports],
@@ -223,13 +225,29 @@ function renderStatus() {
 
   const session = state.session || {};
   const backend = state.session?.ui_version;
-  el('subtitle').textContent = session.video_dir
+  el('subtitle').textContent = !serviceEnabled
+    ? '捕获已关闭'
+    : session.video_dir
     ? `已捕获 ${state.videos.length} 个视频`
     : '连接中';
   el('version-state').lastElementChild.textContent = `UI v${APP_VERSION} / 后端 v${backend ?? '?'}`;
   const captureState = el('capture-state');
-  captureState.className = `state-chip ${state.proxyOk ? '' : 'muted'}`;
-  captureState.lastElementChild.textContent = state.proxyOk ? '捕获服务运行中' : '等待捕获';
+  captureState.className = `state-chip ${serviceEnabled && state.proxyOk ? '' : 'muted'}`;
+  captureState.lastElementChild.textContent = serviceEnabled
+    ? (state.proxyOk ? '捕获服务运行中' : '等待捕获')
+    : '捕获已关闭';
+
+  const serviceToggle = el('service-toggle');
+  const serviceLabel = el('service-toggle-label');
+  serviceToggle.disabled = state.serviceBusy;
+  serviceToggle.setAttribute('aria-pressed', String(serviceEnabled));
+  serviceToggle.classList.toggle('off', !serviceEnabled);
+  serviceLabel.textContent = state.serviceBusy
+    ? '处理中…'
+    : (serviceEnabled ? '关闭捕获' : '开启捕获');
+  serviceToggle.title = serviceEnabled
+    ? '关闭后恢复系统代理，不再捕获新视频'
+    : '开启系统代理并恢复捕获';
   renderMetrics();
 }
 
@@ -660,9 +678,7 @@ async function loadState() {
   ]);
   state.session = statePayload.session;
   state.counters = statePayload.counters || {};
-  state.proxyOk = (sessionStart.records || []).some(
-    (r) => r.event === 'session_start' || r.event === 'system_proxy_configured',
-  ) || statePayload.session?.proxy_port != null;
+  state.proxyOk = statePayload.session?.proxy_configured === true;
   render();
 }
 
@@ -728,6 +744,36 @@ async function probe(fileKey) {
     state.message = { level: 'bad', text: `探测失败:${error.message}` };
     render();
   }
+}
+
+async function setService(enabled) {
+  state.serviceBusy = true;
+  renderStatus();
+  try {
+    const payload = await api('/api/service', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    state.session = {
+      ...(state.session || {}),
+      capture_enabled: payload.service.capture_enabled,
+      proxy_configured: payload.service.proxy_configured,
+    };
+    state.proxyOk = payload.service.proxy_configured;
+    state.message = {
+      level: 'ok',
+      text: payload.service.capture_enabled
+        ? '捕获已开启，系统代理已指向本地服务'
+        : '捕获已关闭，系统代理已恢复',
+    };
+    pushEvent(payload.service.capture_enabled ? '开启捕获' : '关闭捕获');
+  } catch (error) {
+    state.message = { level: 'bad', text: `切换捕获失败:${error.message}` };
+  } finally {
+    state.serviceBusy = false;
+  }
+  render();
 }
 
 function pushEvent(text) {
@@ -800,6 +846,11 @@ el('selftest').addEventListener('click', async () => {
     state.message = { level: 'bad', text: `自检失败:${error.message}` };
   }
   render();
+});
+
+el('service-toggle').addEventListener('click', () => {
+  if (state.serviceBusy) return;
+  setService(state.session?.capture_enabled === false);
 });
 
 el('banner').addEventListener('click', () => { state.message = null; renderBanner(); });
@@ -886,6 +937,15 @@ function connect() {
         break;
       case 'session':
         state.session = { ...(state.session || {}), ...payload.session };
+        renderStatus();
+        break;
+      case 'service':
+        state.session = {
+          ...(state.session || {}),
+          capture_enabled: payload.service.capture_enabled,
+          proxy_configured: payload.service.proxy_configured,
+        };
+        state.proxyOk = payload.service.proxy_configured;
         renderStatus();
         break;
       default:
