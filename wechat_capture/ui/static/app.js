@@ -11,7 +11,7 @@
 // Must match UI_VERSION in api.py. A mismatch means the tab is running an old
 // script against a newer backend (or the reverse), which silently produces
 // wrong results — so it reloads instead.
-const APP_VERSION = 9;
+const APP_VERSION = 10;
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -863,7 +863,11 @@ function connect() {
             state.tab = 'library';
             state.selected = task.file_key;
             state.playingVariant = task.quality;
-            loadVideos();
+            loadVideos().then(() => {
+              render();
+              const player = $('.d-video', detail);
+              player?.play().catch(() => {});
+            });
           }
         }
         renderList();
