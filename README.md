@@ -27,7 +27,7 @@ App 内置 Python 运行时和界面代码。首次下载时会从微信官方 C
 ## 安装 Release 版
 
 1. 打开 [Releases](../../releases) 页面。
-2. 下载 `WeChatDownloader-macOS.zip`。
+2. 下载最新版本中的 `WeChatDownloader-macOS*.zip`。
 3. 解压后把 `WeChatDownloader.app` 拖到“应用程序”或桌面。
 4. 首次打开时如果 Gatekeeper 提示无法验证开发者，请右键点击 App 并选择“打开”。
 

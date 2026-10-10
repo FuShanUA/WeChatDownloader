@@ -11,7 +11,7 @@
 // Must match UI_VERSION in api.py. A mismatch means the tab is running an old
 // script against a newer backend (or the reverse), which silently produces
 // wrong results — so it reloads instead.
-const APP_VERSION = 7;
+const APP_VERSION = 8;
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -200,10 +200,16 @@ function renderTabs() {
 
 function renderStatus() {
   const hook = state.hook || {};
+  const bridgeActive = Boolean(hook.wrapped || state.counters['report:bridge_request']);
+  const injected = Boolean(
+    state.counters.html_injected
+    || state.counters.js_hook_injected
+    || bridgeActive,
+  );
   const dots = [
     ['代理', state.proxyOk],
-    ['注入', state.counters.html_injected || state.counters.js_hook_injected],
-    ['桥', hook.wrapped],
+    ['注入', injected],
+    ['桥', bridgeActive],
     ['上报', state.counters['report:media'] || hook.reports],
   ];
   el('dots').replaceChildren(...dots.map(([label, on]) => {

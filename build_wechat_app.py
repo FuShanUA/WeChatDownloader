@@ -231,8 +231,8 @@ app = BUNDLE(
     info_plist={{
         'CFBundleDisplayName': 'WeChatDownloader',
         'CFBundleName': 'WeChatDownloader',
-        'CFBundleShortVersionString': '1.0',
-        'CFBundleVersion': '1.0',
+        'CFBundleShortVersionString': '1.0.1',
+        'CFBundleVersion': '1.0.1',
         'LSMinimumSystemVersion': '10.13',
         'LSApplicationCategoryType': 'public.app-category.utilities',
         'NSHighResolutionCapable': True,
