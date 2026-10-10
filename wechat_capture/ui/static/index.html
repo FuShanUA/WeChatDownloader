@@ -142,8 +142,12 @@
     <div class="video-stage">
       <video class="d-video" controls playsinline preload="metadata" hidden></video>
       <div class="stage-empty">
-        <i data-lucide="monitor-play"></i>
-        <span>暂无可播放文件</span>
+        <button class="stage-play" type="button">
+          <i data-lucide="play"></i>
+          <span>点击播放</span>
+        </button>
+        <span class="stage-note">将下载并解密当前选择的画质</span>
+        <div class="stage-progress" hidden><span></span></div>
       </div>
       <div class="stage-overlay">
         <strong class="d-title"></strong>

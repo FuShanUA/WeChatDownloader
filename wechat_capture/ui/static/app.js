@@ -11,7 +11,7 @@
 // Must match UI_VERSION in api.py. A mismatch means the tab is running an old
 // script against a newer backend (or the reverse), which silently produces
 // wrong results — so it reloads instead.
-const APP_VERSION = 8;
+const APP_VERSION = 9;
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -27,6 +27,7 @@ const state = {
   tab: 'captures',
   playingVariant: null,
   qualityChoices: {},
+  previewRequests: {},
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -386,7 +387,8 @@ function renderDetail() {
   // --- video area: never show an empty player
   const videoEl = $('.d-video', node);
   const noVideo = $('.stage-empty', node);
-  const playable = (video.variants || []).find((v) => v.decoded);
+  const variants = downloadedVariants(video);
+  const playable = variants.find((v) => v.variant === state.playingVariant) || variants[0];
   if (playable) {
     videoEl.hidden = false;
     noVideo.hidden = true;
@@ -395,6 +397,31 @@ function renderDetail() {
     videoEl.hidden = true;
     noVideo.hidden = false;
     videoEl.removeAttribute('src');
+
+    const playButton = $('.stage-play', node);
+    const playLabel = $('.stage-play span', node);
+    const note = $('.stage-note', node);
+    const stageProgress = $('.stage-progress', node);
+    const stageBar = $('span', stageProgress);
+    const previewQuality = state.previewRequests[video.file_key];
+    const previewTask = previewQuality ? activeTask(video) : null;
+    if (previewTask && ['queued', 'downloading', 'decrypting'].includes(previewTask.state)) {
+      playButton.disabled = true;
+      playLabel.textContent = '准备播放';
+      note.textContent = previewTask.state === 'decrypting'
+        ? '下载完成，正在解密'
+        : `下载中 ${previewTask.total ? `${previewTask.percent ?? 0}%` : '…'} · ${humanSize(previewTask.received)} / ${humanSize(previewTask.total)}`;
+      stageProgress.hidden = false;
+      stageBar.style.width = `${previewTask.state === 'decrypting' ? 100 : (previewTask.total ? previewTask.percent ?? 0 : 100)}%`;
+    } else {
+      playButton.disabled = Boolean(video.link_expired);
+      playLabel.textContent = video.link_expired ? '链接已失效' : '点击播放';
+      note.textContent = video.link_expired
+        ? '回微信重新播放后可再次捕获'
+        : '将下载并解密当前选择的画质';
+      stageProgress.hidden = true;
+      stageBar.style.width = '0%';
+    }
   }
 
   // --- progress
@@ -561,10 +588,16 @@ function renderEvents() {
 function patchProgress(task) {
   const video = videoById(task.file_key);
   if (!video || task.file_key !== state.selected) return;
+  const preview = state.previewRequests[task.file_key] === task.quality;
   const wrap = $('.progress-wrap', detail);
   const bar = $('.d-progress', detail);
   const text = $('.d-progress-text', detail);
   const stateLabel = $('.progress-state', detail);
+  const stageButton = $('.stage-play', detail);
+  const stageLabel = $('.stage-play span', detail);
+  const stageNote = $('.stage-note', detail);
+  const stageProgress = $('.stage-progress', detail);
+  const stageBar = stageProgress ? $('span', stageProgress) : null;
   if (!wrap || !bar || !text || !stateLabel) return;
   const settled = task.state === 'done' || task.state === 'failed';
   if (settled) {
@@ -575,10 +608,23 @@ function patchProgress(task) {
       bar.style.width = '0%';
       stateLabel.textContent = '失败';
       text.textContent = `下载失败:${task.error || '未知原因'}`;
+      if (preview && stageButton && stageLabel && stageNote && stageProgress) {
+        stageButton.disabled = false;
+        stageLabel.textContent = '点击重试';
+        stageNote.textContent = `预览失败:${task.error || '未知原因'}`;
+        stageProgress.hidden = true;
+      }
     } else {
       wrap.hidden = true;
       wrap.classList.remove('failed');
       wrap.classList.remove('unknown');
+      if (preview && stageButton && stageLabel && stageNote && stageProgress && stageBar) {
+        stageButton.disabled = true;
+        stageLabel.textContent = '即将播放';
+        stageNote.textContent = '正在载入视频';
+        stageProgress.hidden = false;
+        stageBar.style.width = '100%';
+      }
     }
     return;
   }
@@ -588,6 +634,15 @@ function patchProgress(task) {
   bar.style.width = `${task.state === 'decrypting' ? 100 : (task.total ? task.percent ?? 0 : 100)}%`;
   stateLabel.textContent = task.state === 'decrypting' ? '解密中' : '下载中';
   text.textContent = progressText(task);
+  if (preview && stageButton && stageLabel && stageNote && stageProgress && stageBar) {
+    stageButton.disabled = true;
+    stageLabel.textContent = '准备播放';
+    stageNote.textContent = task.state === 'decrypting'
+      ? '下载完成，正在解密'
+      : `下载中 ${task.total ? `${task.percent ?? 0}%` : '…'} · ${humanSize(task.received)} / ${humanSize(task.total)}`;
+    stageProgress.hidden = false;
+    stageBar.style.width = `${task.state === 'decrypting' ? 100 : (task.total ? task.percent ?? 0 : 100)}%`;
+  }
 }
 
 // ---------------------------------------------------------------- api
@@ -634,7 +689,10 @@ async function loadTasks() {
   renderMetrics();
 }
 
-async function download(fileKey, quality) {
+async function download(fileKey, quality, { preview = false } = {}) {
+  if (preview) state.previewRequests[fileKey] = quality;
+  else delete state.previewRequests[fileKey];
+
   try {
     const payload = await api(`/api/videos/${encodeURIComponent(fileKey)}/download`, {
       method: 'POST',
@@ -642,10 +700,20 @@ async function download(fileKey, quality) {
       body: JSON.stringify({ quality }),
     });
     state.tasks[payload.task.id] = payload.task;
-    pushEvent(`开始下载 ${quality}`);
+    pushEvent(preview ? `准备播放 ${quality}` : `开始下载 ${quality}`);
     renderMetrics();
     render();
+    if (payload.task.state === 'done') {
+      await loadVideos();
+      const video = videoById(fileKey);
+      if (preview && !downloadedVariants(video || {}).length) {
+        delete state.previewRequests[fileKey];
+        state.message = { level: 'bad', text: '预览失败:任务已完成但没有可播放文件' };
+      }
+      render();
+    }
   } catch (error) {
+    if (preview) delete state.previewRequests[fileKey];
     state.message = { level: 'bad', text: `下载失败:${error.message}` };
     render();
   }
@@ -671,6 +739,9 @@ function pushEvent(text) {
 list.addEventListener('click', (event) => {
   const row = event.target.closest('.row');
   if (!row) return;
+  if (state.selected && state.selected !== row.dataset.key) {
+    delete state.previewRequests[state.selected];
+  }
   state.selected = row.dataset.key;
   const video = videoById(state.selected);
   if (video && !(video.formats || []).length) probe(state.selected);
@@ -685,6 +756,16 @@ detail.addEventListener('click', (event) => {
     if (quality) download(video.file_key, quality);
   }
   if (event.target.closest('.d-probe')) probe(video.file_key);
+  if (event.target.closest('.stage-play')) {
+    const quality = selectedQuality(video);
+    const task = activeTask(video);
+    if (quality && !(task && ['queued', 'downloading', 'decrypting'].includes(task.state))) {
+      download(video.file_key, quality, { preview: true });
+    } else if (quality) {
+      state.previewRequests[video.file_key] = quality;
+      render();
+    }
+  }
   if (event.target.closest('.fmt input')) {
     state.qualityChoices[video.file_key] = event.target.value;
   }
@@ -726,6 +807,9 @@ el('banner').addEventListener('click', () => { state.message = null; renderBanne
 el('tabs').addEventListener('click', (event) => {
   const button = event.target.closest('button[data-tab]');
   if (!button) return;
+  if (state.tab === 'captures' && button.dataset.tab !== 'captures') {
+    delete state.previewRequests[state.selected];
+  }
   state.tab = button.dataset.tab;
   if (!visibleVideos().some((v) => v.file_key === state.selected)) {
     state.selected = visibleVideos()[0]?.file_key || null;
@@ -761,12 +845,26 @@ function connect() {
         patchProgress(task);
         if (task.state === 'done' || task.state === 'failed') {
           pushEvent(task.state === 'done' ? `下载完成 ${task.quality}` : `下载失败 ${task.quality}`);
-          if (task.state === 'done') {
+          const preview = state.previewRequests[task.file_key] === task.quality;
+          if (task.state === 'failed' && preview) {
+            delete state.previewRequests[task.file_key];
+          }
+          if (task.state === 'done' && preview) {
+            state.playingVariant = task.quality;
+            loadVideos().then(() => {
+              delete state.previewRequests[task.file_key];
+              render();
+              if (state.selected === task.file_key && state.tab === 'captures') {
+                const player = $('.d-video', detail);
+                player?.play().catch(() => {});
+              }
+            });
+          } else if (task.state === 'done') {
             state.tab = 'library';
             state.selected = task.file_key;
             state.playingVariant = task.quality;
+            loadVideos();
           }
-          loadVideos();
         }
         renderList();
         renderMetrics();

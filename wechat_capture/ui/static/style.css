@@ -706,16 +706,74 @@ button {
   display: grid;
   place-items: center;
   align-content: center;
-  gap: 9px;
+  gap: 10px;
+  width: 100%;
+  padding: 20px;
   color: var(--muted);
   font-size: 12px;
   text-align: center;
 }
 
-.stage-empty svg {
-  width: 34px;
-  height: 34px;
-  color: rgba(7, 193, 96, 0.75);
+.stage-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 18px;
+  border: 1px solid rgba(5, 154, 76, 0.7);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #17cf74, #07b658);
+  color: var(--primary-ink);
+  font-size: 13px;
+  font-weight: 660;
+  box-shadow: 0 8px 18px rgba(7, 193, 96, 0.22);
+  transition: background 120ms ease-out, border-color 120ms ease-out, transform 120ms ease-out;
+}
+
+.stage-play svg {
+  width: 16px;
+  height: 16px;
+}
+
+.stage-play:hover {
+  border-color: #07c160;
+  background: linear-gradient(180deg, #24d97c, #07c160);
+}
+
+.stage-play:active {
+  transform: translateY(1px);
+}
+
+.stage-play:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.stage-note {
+  max-width: 420px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-progress {
+  overflow: hidden;
+  width: min(280px, 70%);
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(23, 33, 28, 0.12);
+}
+
+.stage-progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--primary));
+  transition: width 160ms ease-out;
 }
 
 .stage-overlay {

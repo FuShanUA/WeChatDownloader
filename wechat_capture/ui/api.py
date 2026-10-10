@@ -42,7 +42,7 @@ from . import downloads as dl
 # Bumped whenever a UI behaviour changes. Exposed over the API and the SSE
 # hello frame so a stale browser tab or an un-restarted mitmdump can be
 # detected instead of silently showing wrong results.
-UI_VERSION = 8
+UI_VERSION = 9
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 JSON_TYPE = "application/json; charset=utf-8"
