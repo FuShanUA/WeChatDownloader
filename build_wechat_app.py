@@ -144,13 +144,6 @@ def make_icon() -> None:
         fill=(4, 154, 82, 250),
     )
 
-    draw.rounded_rectangle(
-        (18, 18, render_size - 18, render_size - 18),
-        radius=radius - 18,
-        outline=(255, 255, 255, 48),
-        width=18,
-    )
-
     image = image.resize((size, size), Image.Resampling.LANCZOS)
 
     if ICONSET.exists():
@@ -231,8 +224,8 @@ app = BUNDLE(
     info_plist={{
         'CFBundleDisplayName': 'WeChatDownloader',
         'CFBundleName': 'WeChatDownloader',
-        'CFBundleShortVersionString': '1.0.1',
-        'CFBundleVersion': '1.0.1',
+        'CFBundleShortVersionString': '1.0.2',
+        'CFBundleVersion': '1.0.2',
         'LSMinimumSystemVersion': '10.13',
         'LSApplicationCategoryType': 'public.app-category.utilities',
         'NSHighResolutionCapable': True,

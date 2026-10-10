@@ -724,7 +724,7 @@ class WeChatCapture:
         self.auto_decrypt = os.environ.get("WX_AUTO_DECRYPT", "1") == "1"
         self.decryptor = Path(__file__).resolve().parent / "decrypt" / "wechat_video_decrypt.mjs"
         self.capture_host = os.environ.get("WX_CAPTURE_HOST", "127.0.0.1")
-        self.capture_port = int(os.environ.get("WX_CAPTURE_PORT", "8765"))
+        self.capture_port = int(os.environ.get("WX_CAPTURE_PORT", "18765"))
         # A fixed token via env keeps the capture endpoint testable from a shell.
         self.capture_token = os.environ.get("WX_CAPTURE_TOKEN") or secrets.token_urlsafe(24)
         self.proxy_port = int(os.environ.get("WX_PROXY_PORT", "9090"))

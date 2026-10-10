@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import secrets
 import shutil
@@ -12,12 +13,13 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import webview
 
 
-CAPTURE_PORT = 8765
+CAPTURE_PORT = 18765
 PROXY_PORT = 9090
 APP_NAME = "WeChatDownloader"
 
@@ -109,10 +111,15 @@ def ensure_wasm(node: str) -> tuple[bool, str]:
 
 
 def service_ready() -> bool:
+    """Only accept our own capture API, not any process listening on the port."""
     try:
-        with socket.create_connection(("127.0.0.1", CAPTURE_PORT), timeout=0.5):
-            return True
-    except OSError:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{CAPTURE_PORT}/api/state",
+            timeout=0.5,
+        ) as response:
+            payload = json.load(response)
+        return bool(payload.get("ok") and payload.get("session"))
+    except (OSError, ValueError, json.JSONDecodeError):
         return False
 
 

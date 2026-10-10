@@ -1,6 +1,6 @@
 """HTTP router for the Web UI.
 
-Mounted onto the HTTP server the addon already runs on 127.0.0.1:8765, so the UI
+Mounted onto the HTTP server the addon already runs on 127.0.0.1:18765, so the UI
 needs no extra process. The addon imports this lazily: delete `work/ui/` and
 capture still works.
 
