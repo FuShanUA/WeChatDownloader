@@ -13,6 +13,7 @@ GET  /                                   the UI
 GET  /static/<path>                      assets
 GET  /api/state                          capture/hook summary
 GET  /api/videos                         captured videos
+GET  /api/lives                          captured live streams
 GET  /api/videos/<key>                   one video in detail
 GET  /api/videos/<key>/stream?variant=   local file, Range-capable
 GET  /api/videos/<key>/probe             (re)probe rendition sizes
@@ -20,6 +21,11 @@ GET  /api/tasks                          download tasks
 GET  /api/events                         SSE stream
 GET  /api/log?tail=200                   tail of the capture log
 POST /api/videos/<key>/download          {"quality": "best"}
+POST /api/lives/<id>/record              start live recording
+POST /api/lives/<id>/stop                stop the active live recording
+GET  /api/live-recordings/<id>/stream    recorded live MP4
+GET  /api/live-recordings/<id>/reveal    show the recording in Finder
+GET  /api/live-recordings/<id>/open      open with the default player
 POST /api/service                        {"enabled": true|false}
 POST /api/selftest                       run the decryptor's self-test
 """
@@ -39,11 +45,12 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import downloads as dl
+from . import live as live_recording
 
 # Bumped whenever a UI behaviour changes. Exposed over the API and the SSE
 # hello frame so a stale browser tab or an un-restarted mitmdump can be
 # detected instead of silently showing wrong results.
-UI_VERSION = 11
+UI_VERSION = 12
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 JSON_TYPE = "application/json; charset=utf-8"
@@ -164,20 +171,24 @@ class Router:
         self.owner: Any = None
         self.broadcaster = Broadcaster()
         self.downloads: dl.DownloadManager | None = None
+        self.live: live_recording.LiveRecordingManager | None = None
 
     # ------------------------------------------------------------- lifecycle
     def attach(self, owner: Any) -> None:
         self.owner = owner
         self.downloads = dl.DownloadManager(owner)
+        self.live = live_recording.LiveRecordingManager(owner)
         owner.event_sinks.append(self._on_capture_event)
 
     def _on_capture_event(self, record: dict[str, Any]) -> None:
         """Translate a capture log record into a small SSE signal."""
         event = record.get("event")
-        if event in {"media", "video_saved", "probe"}:
+        if event in {"media", "video_saved", "probe", "live"}:
             # The UI refetches the list; that keeps serialization in one place.
             payload = {"type": "videos_changed"}
-            if event in {"media", "video_saved"}:
+            if event == "live":
+                payload = {"type": "lives_changed"}
+            elif event in {"media", "video_saved"}:
                 payload["file_key"] = record.get("file_key")
         elif event == "hook_status":
             payload = {"type": "hook", "hook": {
@@ -191,6 +202,8 @@ class Router:
             }}
         elif event == "download":
             payload = {"type": "download", "task": {k: v for k, v in record.items() if k != "event"}}
+        elif event == "live_recording":
+            payload = {"type": "live_recording", "task": {k: v for k, v in record.items() if k != "event"}}
         elif event == "session_start":
             payload = {"type": "session", "session": {k: v for k, v in record.items() if k != "event"}}
         elif event == "capture_status":
@@ -218,6 +231,8 @@ class Router:
                 return Response.json(self.state())
             if route == "/api/videos":
                 return Response.json({"videos": self.videos(), "ok": True})
+            if route == "/api/lives":
+                return Response.json({"lives": self.lives(), "ok": True})
             if route == "/api/tasks":
                 return Response.json({"tasks": self.tasks(), "ok": True})
             if route == "/api/log":
@@ -246,12 +261,31 @@ class Router:
                 if action == "open":
                     return self.open_file(file_key, (query.get("variant") or [""])[0])
 
+            live_match = self._live_recording_route(route)
+            if live_match:
+                task_id, action = live_match
+                if action == "stream":
+                    return self.live_stream(task_id, headers)
+                if action == "reveal":
+                    return self.live_reveal(task_id)
+                if action == "open":
+                    return self.live_open(task_id)
+
         if method == "POST":
             match = self._video_route(route)
             if match:
                 file_key, action = match
                 if action == "download":
                     return self.download(file_key, body)
+                if action in {"reveal", "open"}:
+                    return Response.error(405, "use GET for this action")
+            live_match = self._live_route(route)
+            if live_match:
+                live_id, action = live_match
+                if action == "record":
+                    return self.record_live(live_id)
+                if action == "stop":
+                    return self.stop_live(live_id)
                 if action in {"reveal", "open"}:
                     return Response.error(405, "use GET for this action")
             if route == "/api/selftest":
@@ -270,6 +304,28 @@ class Router:
         file_key = unquote(parts[0])
         action = parts[1] if len(parts) > 1 else ""
         return (file_key, action) if file_key else None
+
+    @staticmethod
+    def _live_route(route: str) -> tuple[str, str] | None:
+        prefix = "/api/lives/"
+        if not route.startswith(prefix):
+            return None
+        rest = route[len(prefix):]
+        parts = rest.split("/", 1)
+        live_id = unquote(parts[0])
+        action = parts[1] if len(parts) > 1 else ""
+        return (live_id, action) if live_id else None
+
+    @staticmethod
+    def _live_recording_route(route: str) -> tuple[str, str] | None:
+        prefix = "/api/live-recordings/"
+        if not route.startswith(prefix):
+            return None
+        rest = route[len(prefix):]
+        parts = rest.split("/", 1)
+        task_id = unquote(parts[0])
+        action = parts[1] if len(parts) > 1 else ""
+        return (task_id, action) if task_id else None
 
     # ------------------------------------------------------------- static UI
     def _static(self, relative: str) -> Response:
@@ -300,6 +356,7 @@ class Router:
                 "proxy_configured": bool(proxy_manager and proxy_manager.changed),
                 "proxy_service": proxy_manager.service if proxy_manager else "",
                 "capture_enabled": owner.capture_enabled,
+                "ffmpeg_available": live_recording.ffmpeg_path() is not None,
             },
             "counters": counters,
             "ui_version": UI_VERSION,
@@ -436,6 +493,39 @@ class Router:
     def tasks(self) -> list[dict[str, Any]]:
         return self.downloads.all()
 
+    def lives(self) -> list[dict[str, Any]]:
+        owner = self.owner
+        with owner.state_lock:
+            lives = [dict(item) for item in owner.live_by_id.values()]
+        tasks_by_live: dict[str, list[dict[str, Any]]] = {}
+        for task in self.live.all():
+            tasks_by_live.setdefault(task["live_id"], []).append(task)
+        for item in lives:
+            tasks = tasks_by_live.get(item["live_id"]) or []
+            item["task"] = tasks[-1] if tasks else None
+        for live_id, tasks in tasks_by_live.items():
+            if any(item["live_id"] == live_id for item in lives):
+                continue
+            latest = tasks[-1]
+            lives.append({
+                "live_id": live_id,
+                "title": latest.get("title") or "",
+                "author": latest.get("author") or "",
+                "url": "",
+                "source": "",
+                "endpoint": "",
+                "start_time": 0,
+                "captured_at": latest.get("started"),
+                "task": latest,
+            })
+        lives.sort(
+            key=lambda item: item.get("captured_at")
+            or (item.get("task") or {}).get("started")
+            or 0,
+            reverse=True,
+        )
+        return lives
+
     # ------------------------------------------------------------ API: files
     def stream(self, file_key: str, variant: str, headers: dict[str, str]) -> Response:
         name = f"{file_key}.{variant}.mp4" if variant else f"{file_key}.mp4"
@@ -501,6 +591,63 @@ class Router:
             return Response.error(500, result.stderr.strip() or "could not open video")
         return Response.json({"ok": True, "path": str(path)})
 
+    def live_stream(self, task_id: str, headers: dict[str, str]) -> Response:
+        path = self._live_output_path(task_id)
+        if path is None:
+            return Response.error(404, "live recording not found")
+        range_header = headers.get("Range") or headers.get("range")
+        result = dl.serve_range(path, range_header)
+        content_type = result.headers.pop("Content-Type", "video/mp4")
+
+        def body() -> Any:
+            for chunk in result.chunks():
+                yield chunk
+
+        response = StreamResponse(body(), content_type, result.headers)
+        response.status = result.status
+        return response
+
+    def _live_output_path(self, task_id: str) -> Path | None:
+        task = self.live.get(task_id)
+        if task is None or not task.output:
+            return None
+        path = Path(task.output)
+        root = self.owner.video_dir.resolve()
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            return None
+        return resolved
+
+    def live_reveal(self, task_id: str) -> Response:
+        path = self._live_output_path(task_id)
+        if path is None:
+            return Response.error(404, "live recording not found")
+        try:
+            result = subprocess.run(
+                ["open", "-R", str(path)],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return Response.error(500, f"could not open Finder: {exc}")
+        if result.returncode != 0:
+            return Response.error(500, result.stderr.strip() or "could not open Finder")
+        return Response.json({"ok": True, "path": str(path)})
+
+    def live_open(self, task_id: str) -> Response:
+        path = self._live_output_path(task_id)
+        if path is None:
+            return Response.error(404, "live recording not found")
+        try:
+            result = subprocess.run(
+                ["open", str(path)],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return Response.error(500, f"could not open video: {exc}")
+        if result.returncode != 0:
+            return Response.error(500, result.stderr.strip() or "could not open video")
+        return Response.json({"ok": True, "path": str(path)})
+
     # ----------------------------------------------------------- API: write
     def download(self, file_key: str, body: bytes) -> Response:
         payload: dict[str, Any] = {}
@@ -514,6 +661,21 @@ class Router:
             task = self.downloads.start(file_key, quality)
         except KeyError as exc:
             return Response.error(404, str(exc))
+        return Response.json({"ok": True, "task": task.as_dict()})
+
+    def record_live(self, live_id: str) -> Response:
+        try:
+            task = self.live.start(live_id)
+        except KeyError as exc:
+            return Response.error(404, str(exc))
+        except RuntimeError as exc:
+            return Response.error(500, str(exc))
+        return Response.json({"ok": True, "task": task.as_dict()})
+
+    def stop_live(self, live_id: str) -> Response:
+        task = self.live.stop(live_id)
+        if task is None:
+            return Response.error(404, "no active recording for this live stream")
         return Response.json({"ok": True, "task": task.as_dict()})
 
     def set_service(self, body: bytes) -> Response:

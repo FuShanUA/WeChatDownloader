@@ -11,13 +11,15 @@
 // Must match UI_VERSION in api.py. A mismatch means the tab is running an old
 // script against a newer backend (or the reverse), which silently produces
 // wrong results — so it reloads instead.
-const APP_VERSION = 11;
+const APP_VERSION = 12;
 
 // ---------------------------------------------------------------- state
 const state = {
   videos: [],
+  lives: [],
   tasks: {},
   selected: null,
+  selectedLive: null,
   session: null,
   counters: {},
   hook: null,
@@ -26,6 +28,7 @@ const state = {
   scope: 'watched',
   tab: 'captures',
   playingVariant: null,
+  playingLiveTask: null,
   qualityChoices: {},
   previewRequests: {},
   serviceBusy: false,
@@ -139,6 +142,35 @@ function activeTask(video) {
   return [...byId.values()].pop() || null;
 }
 
+function liveById(liveId) {
+  return state.lives.find((live) => live.live_id === liveId) || null;
+}
+
+function activeLiveTask(live) {
+  return live?.task && ['queued', 'recording', 'stopping'].includes(live.task.state)
+    ? live.task
+    : null;
+}
+
+function liveStateLabel(task) {
+  if (!task) return '待录制';
+  if (task.state === 'queued') return '准备录制';
+  if (task.state === 'recording') return '录制中';
+  if (task.state === 'stopping') return '正在停止';
+  if (task.state === 'done') return '已录制';
+  return '录制失败';
+}
+
+function liveProgressText(task) {
+  if (!task) return '';
+  if (task.state === 'failed') return `录制失败:${task.error || '未知原因'}`;
+  return [
+    task.duration_human || '00:00',
+    humanSize(task.received),
+    task.speed_human || '',
+  ].filter(Boolean).join(' · ');
+}
+
 /** Quality entries: what the backend probed, merged with what is on disk. */
 function qualities(video) {
   const rows = [];
@@ -194,6 +226,7 @@ function render() {
 
 function renderTabs() {
   el('tab-captures').textContent = state.videos.filter((v) => v.watched).length || '';
+  el('tab-live').textContent = state.lives.length || '';
   el('tab-library').textContent = state.videos.filter((v) => v.downloaded.length).length || '';
   for (const button of el('tabs').querySelectorAll('button')) {
     button.classList.toggle('active', button.dataset.tab === state.tab);
@@ -254,7 +287,7 @@ function renderStatus() {
 function renderMetrics() {
   const active = Object.values(state.tasks).filter(
     (task) => ['queued', 'downloading', 'decrypting'].includes(task.state),
-  ).length;
+  ).length + state.lives.filter((live) => activeLiveTask(live)).length;
   el('metric-captures').textContent = state.videos.length;
   el('metric-available').textContent = state.videos.filter(
     (video) => !video.link_expired && !video.downloaded.length,
@@ -287,7 +320,12 @@ function renderBanner() {
 }
 
 function renderList() {
+  if (state.tab === 'live') {
+    renderLiveList();
+    return;
+  }
   const rows = visibleVideos();
+  el('scope').hidden = false;
   el('empty').hidden = rows.length > 0;
   el('count').textContent = state.videos.length
     ? `(${rows.length}/${state.videos.length})`
@@ -361,7 +399,56 @@ function renderList() {
   refreshIcons();
 }
 
+function renderLiveList() {
+  const rows = state.lives;
+  el('empty').hidden = rows.length > 0;
+  el('scope').hidden = true;
+  el('pane-title').innerHTML = '直播录制 <span class="muted" id="count"></span>';
+  el('count').textContent = rows.length ? `(${rows.length})` : '';
+  el('hidden-note').hidden = true;
+
+  list.replaceChildren(...rows.map((live) => {
+    const node = tpl('tpl-row');
+    node.dataset.key = live.live_id;
+    if (live.live_id === state.selectedLive) node.classList.add('active');
+    $('.row-media i', node)?.setAttribute('data-lucide', 'radio');
+
+    const title = $('.row-title', node);
+    title.textContent = live.title || live.author || `直播 ${shortKey(live.live_id)}`;
+    title.title = live.title || live.live_id;
+
+    const sub = $('.row-sub', node);
+    sub.textContent = live.author || shortKey(live.live_id);
+
+    const task = live.task;
+    const progress = $('.row-progress', node);
+    const progressBar = $('span', progress);
+    if (task && ['recording', 'stopping'].includes(task.state)) {
+      progress.hidden = false;
+      progressBar.style.width = '100%';
+    } else {
+      progress.hidden = true;
+    }
+
+    const badge = $('.row-badge', node);
+    badge.textContent = liveStateLabel(task);
+    badge.className = `row-badge badge ${task?.state === 'failed' ? 'bad' : task?.state === 'done' ? 'ok' : task ? 'busy' : ''}`;
+
+    const meta = [
+      `开播 ${formatTimestamp(live.start_time) || '未知'}`,
+      `捕获 ${formatTimestamp(live.captured_at) || '刚刚'}`,
+    ];
+    $('.row-meta', node).textContent = meta.filter(Boolean).join(' · ');
+    return node;
+  }));
+  refreshIcons();
+}
+
 function renderDetail() {
+  if (state.tab === 'live') {
+    renderLiveDetail();
+    return;
+  }
   const video = videoById(state.selected);
   if (!video) {
     detail.replaceChildren();
@@ -523,6 +610,117 @@ function renderDetail() {
   refreshIcons();
 }
 
+function renderLiveDetail() {
+  const live = liveById(state.selectedLive);
+  if (!live) {
+    detail.replaceChildren();
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML = `
+      <i data-lucide="radio"></i>
+      <strong>选择一场直播</strong>
+      <span>在微信里打开视频号直播后等待捕获</span>
+    `;
+    detail.append(empty);
+    refreshIcons();
+    return;
+  }
+
+  const node = tpl('tpl-live-detail');
+  const task = live.task;
+  for (const heading of node.querySelectorAll('.d-title')) {
+    heading.textContent = live.title || live.author || `直播 ${shortKey(live.live_id)}`;
+    heading.title = live.title || live.live_id;
+  }
+  $('.d-author', node).textContent = live.author || shortKey(live.live_id);
+
+  const badge = $('.d-badge', node);
+  badge.textContent = liveStateLabel(task);
+  badge.className = `d-badge badge ${task?.state === 'failed' ? 'bad' : task?.state === 'done' ? 'ok' : task ? 'busy' : ''}`;
+
+  const videoEl = $('.d-video', node);
+  const stageEmpty = $('.stage-empty', node);
+  const stateLabel = $('.live-state-label', node);
+  const stageNote = $('.stage-note', node);
+  const stageProgress = $('.stage-progress', node);
+  const stageBar = $('span', stageProgress);
+  if (task?.state === 'done' && task.output_exists) {
+    videoEl.hidden = false;
+    stageEmpty.hidden = true;
+    videoEl.src = `/api/live-recordings/${encodeURIComponent(task.id)}/stream`;
+  } else {
+    videoEl.hidden = true;
+    videoEl.removeAttribute('src');
+    stageEmpty.hidden = false;
+    stateLabel.textContent = liveStateLabel(task);
+    stageNote.textContent = task?.state === 'failed'
+      ? (task.error || '录制失败')
+      : (task?.state === 'recording' ? liveProgressText(task) : '录制完成后在这里播放');
+    stageProgress.hidden = !task || !['queued', 'recording', 'stopping'].includes(task.state);
+    stageBar.style.width = '100%';
+  }
+
+  const wrap = $('.live-progress', node);
+  const bar = $('.d-progress', node);
+  const text = $('.d-progress-text', node);
+  const progressState = $('.progress-state', node);
+  if (task && ['queued', 'recording', 'stopping'].includes(task.state)) {
+    wrap.hidden = false;
+    wrap.classList.remove('failed');
+    wrap.classList.add('unknown');
+    bar.style.width = '100%';
+    progressState.textContent = liveStateLabel(task);
+    text.textContent = liveProgressText(task);
+  } else if (task?.state === 'failed') {
+    wrap.hidden = false;
+    wrap.classList.add('failed');
+    wrap.classList.remove('unknown');
+    bar.style.width = '0%';
+    progressState.textContent = '失败';
+    text.textContent = `录制失败:${task.error || '未知原因'}`;
+  } else {
+    wrap.hidden = true;
+  }
+
+  const ffmpegReady = state.session?.ffmpeg_available !== false;
+  const recordButton = $('.live-record', node);
+  const stopButton = $('.live-stop', node);
+  const openButton = $('.live-open', node);
+  const revealButton = $('.live-reveal', node);
+  recordButton.hidden = Boolean(activeLiveTask(live));
+  stopButton.hidden = !activeLiveTask(live);
+  openButton.hidden = !(task?.state === 'done' && task.output_exists);
+  revealButton.disabled = !(task?.state === 'done' && task.output_exists);
+  recordButton.disabled = !ffmpegReady || !live.url;
+
+  const path = $('.finder-path', node);
+  path.textContent = task?.output_exists ? task.output : state.session?.video_dir || '';
+  path.title = path.textContent;
+
+  const hint = $('.d-hint', node);
+  hint.textContent = !ffmpegReady
+    ? '未找到 ffmpeg，请先执行 brew install ffmpeg'
+    : (!live.url ? '直播地址已过期，回微信重新打开直播后可录制' : (activeLiveTask(live) ? '停止后会自动生成 MP4' : '录制会保存当前直播画面和声音'));
+
+  const meta = $('.live-meta', node);
+  const lines = [
+    `live_id ${live.live_id}`,
+    `来源 ${live.source || '—'}`,
+    `开播 ${formatTimestamp(live.start_time) || '未知'}`,
+    task?.state === 'done' ? `时长 ${task.duration_human}` : '',
+    task?.state === 'done' ? `大小 ${humanSize(task.received)}` : '',
+  ].filter(Boolean);
+  for (const line of lines) {
+    const div = document.createElement('div');
+    div.className = 'muted';
+    div.textContent = line;
+    meta.append(div);
+  }
+
+  detail.replaceChildren(node);
+  refreshIcons();
+}
+
 function downloadedVariants(video) {
   return (video.variants || [])
     .filter((variant) => variant.decoded && variant.path)
@@ -663,6 +861,50 @@ function patchProgress(task) {
   }
 }
 
+function patchLiveProgress(task) {
+  const live = liveById(task.live_id);
+  if (!live || live.live_id !== state.selectedLive || state.tab !== 'live') return;
+  const wrap = $('.live-progress', detail);
+  const bar = $('.d-progress', detail);
+  const text = $('.d-progress-text', detail);
+  const stateLabel = $('.progress-state', detail);
+  const stageLabel = $('.live-state-label', detail);
+  const stageNote = $('.stage-note', detail);
+  if (!wrap || !bar || !text || !stateLabel) return;
+  if (task.state === 'failed') {
+    wrap.hidden = false;
+    wrap.classList.add('failed');
+    wrap.classList.remove('unknown');
+    bar.style.width = '0%';
+    stateLabel.textContent = '失败';
+    text.textContent = `录制失败:${task.error || '未知原因'}`;
+    if (stageLabel && stageNote) {
+      stageLabel.textContent = '录制失败';
+      stageNote.textContent = task.error || '录制失败';
+    }
+    return;
+  }
+  if (task.state === 'done') {
+    wrap.hidden = true;
+    wrap.classList.remove('failed', 'unknown');
+    if (stageLabel && stageNote) {
+      stageLabel.textContent = '已录制';
+      stageNote.textContent = '正在载入视频';
+    }
+    return;
+  }
+  wrap.hidden = false;
+  wrap.classList.remove('failed');
+  wrap.classList.add('unknown');
+  bar.style.width = '100%';
+  stateLabel.textContent = liveStateLabel(task);
+  text.textContent = liveProgressText(task);
+  if (stageLabel && stageNote) {
+    stageLabel.textContent = liveStateLabel(task);
+    stageNote.textContent = liveProgressText(task);
+  }
+}
+
 // ---------------------------------------------------------------- api
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -703,6 +945,41 @@ async function loadTasks() {
   const payload = await api('/api/tasks');
   for (const task of payload.tasks || []) state.tasks[task.id] = task;
   renderMetrics();
+}
+
+async function loadLives() {
+  const payload = await api('/api/lives');
+  state.lives = payload.lives || [];
+  if (!state.selectedLive || !liveById(state.selectedLive)) {
+    state.selectedLive = state.lives[0]?.live_id || null;
+  }
+  render();
+}
+
+async function recordLive(liveId) {
+  try {
+    const payload = await api(`/api/lives/${encodeURIComponent(liveId)}/record`, { method: 'POST' });
+    const live = liveById(liveId);
+    if (live) live.task = payload.task;
+    pushEvent('开始直播录制');
+    render();
+  } catch (error) {
+    state.message = { level: 'bad', text: `开始录制失败:${error.message}` };
+    render();
+  }
+}
+
+async function stopLive(liveId) {
+  try {
+    const payload = await api(`/api/lives/${encodeURIComponent(liveId)}/stop`, { method: 'POST' });
+    const live = liveById(liveId);
+    if (live) live.task = payload.task;
+    pushEvent('停止直播录制');
+    render();
+  } catch (error) {
+    state.message = { level: 'bad', text: `停止录制失败:${error.message}` };
+    render();
+  }
 }
 
 async function download(fileKey, quality, { preview = false } = {}) {
@@ -785,6 +1062,11 @@ function pushEvent(text) {
 list.addEventListener('click', (event) => {
   const row = event.target.closest('.row');
   if (!row) return;
+  if (state.tab === 'live') {
+    state.selectedLive = row.dataset.key;
+    render();
+    return;
+  }
   if (state.selected && state.selected !== row.dataset.key) {
     delete state.previewRequests[state.selected];
   }
@@ -795,6 +1077,21 @@ list.addEventListener('click', (event) => {
 });
 
 detail.addEventListener('click', (event) => {
+  if (state.tab === 'live') {
+    const live = liveById(state.selectedLive);
+    if (!live) return;
+    if (event.target.closest('.live-record')) recordLive(live.live_id);
+    if (event.target.closest('.live-stop')) stopLive(live.live_id);
+    if (event.target.closest('.live-reveal') && live.task?.output_exists) {
+      api(`/api/live-recordings/${encodeURIComponent(live.task.id)}/reveal`)
+        .catch((error) => pushEvent(`打开 Finder 失败:${error.message}`));
+    }
+    if (event.target.closest('.live-open') && live.task?.output_exists) {
+      api(`/api/live-recordings/${encodeURIComponent(live.task.id)}/open`)
+        .catch((error) => pushEvent(`打开视频失败:${error.message}`));
+    }
+    return;
+  }
   const video = videoById(state.selected);
   if (!video) return;
   if (event.target.closest('.d-download')) {
@@ -862,6 +1159,13 @@ el('tabs').addEventListener('click', (event) => {
     delete state.previewRequests[state.selected];
   }
   state.tab = button.dataset.tab;
+  if (state.tab === 'live') {
+    if (!state.selectedLive || !liveById(state.selectedLive)) {
+      state.selectedLive = state.lives[0]?.live_id || null;
+    }
+    render();
+    return;
+  }
   if (!visibleVideos().some((v) => v.file_key === state.selected)) {
     state.selected = visibleVideos()[0]?.file_key || null;
   }
@@ -885,6 +1189,9 @@ function connect() {
     switch (payload.type) {
       case 'videos_changed':
         loadVideos();
+        break;
+      case 'lives_changed':
+        loadLives();
         break;
       case 'hook':
         state.hook = payload.hook;
@@ -925,6 +1232,24 @@ function connect() {
         renderMetrics();
         break;
       }
+      case 'live_recording': {
+        const task = payload.task;
+        const live = liveById(task.live_id);
+        if (live) live.task = task;
+        patchLiveProgress(task);
+        if (task.state === 'done' || task.state === 'failed') {
+          pushEvent(task.state === 'done' ? '直播录制完成' : '直播录制失败');
+          loadLives().then(() => {
+            if (task.state === 'done' && state.selectedLive === task.live_id && state.tab === 'live') {
+              const player = $('.d-video', detail);
+              player?.play().catch(() => {});
+            }
+          });
+        }
+        renderList();
+        renderMetrics();
+        break;
+      }
       case 'hello':
         if (payload.version && payload.version !== APP_VERSION) {
           state.message = {
@@ -958,6 +1283,10 @@ function connect() {
   source.onopen = () => { loadState(); loadVideos(); };
 }
 
-loadTasks().then(loadState).then(loadVideos).then(connect).catch((error) => {
+loadTasks()
+  .then(loadState)
+  .then(() => Promise.all([loadVideos(), loadLives()]))
+  .then(connect)
+  .catch((error) => {
   el('subtitle').textContent = `初始化失败:${error.message}`;
 });

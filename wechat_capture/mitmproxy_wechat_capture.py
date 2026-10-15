@@ -34,6 +34,7 @@ WX_VIDEO_DIR); WX_SAVE_VIDEO accepts keyed (default), all or off.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import os
 import re
@@ -226,11 +227,13 @@ BOOTSTRAP_TEMPLATE = r"""
     fetchScans: 0,
     hookCalls: 0,
     media: 0,
+    live: 0,
     errors: [],
     started: Date.now()
   };
   W.__wxDecodeCaptureState = state;
   W.__wxDecodeMedia = W.__wxDecodeMedia || {};
+  W.__wxDecodeLive = W.__wxDecodeLive || {};
 
   var rid = 0;
   var outbox = [];
@@ -365,6 +368,36 @@ BOOTSTRAP_TEMPLATE = r"""
     post(record, 'media');
   }
 
+  function liveCdnUrl(node) {
+    var sdk = node.liveSdkInfo || node.live_sdk_info || {};
+    var url = sdk.liveCdnUrl || sdk.live_cdn_url || sdk.liveCDNUrl || '';
+    return typeof url === 'string' ? url : '';
+  }
+
+  function captureLive(source, endpoint, node, context) {
+    var url = liveCdnUrl(node);
+    if (!url) return;
+    var info = node.liveInfo || node.live_info || {};
+    var liveId = String(info.liveId || info.live_id || node.liveId || node.live_id || '');
+    if (!liveId) liveId = 'url-' + url.slice(0, 120);
+    var dedupeKey = liveId + '|' + url;
+    if (W.__wxDecodeLive[dedupeKey]) return;
+    W.__wxDecodeLive[dedupeKey] = 1;
+    var contact = node.anchorContact || node.anchor_contact || node.contact || {};
+    var record = {
+      event: 'live',
+      source: source,
+      endpoint: endpoint || '',
+      liveId: liveId,
+      title: String(node.liveDescription || node.live_description || node.description || context?.title || '').slice(0, 160),
+      author: String(node.nickname || contact.nickname || context?.author || '').slice(0, 80),
+      startTime: Number(info.startTime || info.start_time || 0) || 0,
+      url: url
+    };
+    state.live++;
+    post(record, 'live');
+  }
+
   function scan(source, endpoint, node, budget, context) {
     if (!node || typeof node !== 'object' || budget.n-- <= 0 || budget.d > 12) return;
     if (Object.prototype.toString.call(node) === '[object Array]') {
@@ -372,6 +405,7 @@ BOOTSTRAP_TEMPLATE = r"""
       return;
     }
     var next = feedMeta(node) || context;
+    if (liveCdnUrl(node)) captureLive(source, endpoint, node, next);
     if (node.decodeKey || node.decode_key || node.decodekey) captureMedia(source, endpoint, node, next);
     var keys = Object.keys(node);
     for (var k = 0; k < keys.length; k++) {
@@ -744,6 +778,7 @@ class WeChatCapture:
         # key per API response for the same encfilekey, and only one of them
         # decrypts the bytes the client actually fetched.
         self.media_by_file_key: dict[str, list[dict[str, Any]]] = {}
+        self.live_by_id: dict[str, dict[str, Any]] = {}
         self.assemblers: dict[str, VideoAssembler] = {}
         self.pending_completed: list[VideoAssembler] = []
         self.saved_files: set[str] = set()
@@ -1586,6 +1621,8 @@ class WeChatCapture:
             self._track_viewing(payload)
         if event == "media":
             return self.accept_media(payload)
+        if event == "live":
+            return self.accept_live(payload)
         self._write({k: _jsonable(v) for k, v in payload.items()})
         if event == "bootstrap_installed":
             ctx.log.info("Capture bootstrap installed in the Finder page")
@@ -1666,6 +1703,42 @@ class WeChatCapture:
             for assembler in list(self.pending_completed):
                 self.pending_completed.remove(assembler)
                 self._persist_video(assembler, self.media_by_file_key.get(assembler.file_key, []))
+        return record
+
+    def accept_live(self, payload: dict[str, Any]) -> dict[str, Any]:
+        url = str(payload.get("url") or "")
+        if not url.startswith(("http://", "https://")):
+            self._write({
+                "event": "live_invalid",
+                "reason": "live_cdn_url_missing",
+                "live_keys": list(payload.keys()),
+            })
+            return payload
+
+        live_id = str(payload.get("liveId") or "")
+        if not live_id:
+            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:20]
+            live_id = f"url-{digest}"
+        record = {
+            "event": "live",
+            "live_id": live_id,
+            "title": str(payload.get("title") or ""),
+            "author": str(payload.get("author") or ""),
+            "url": url,
+            "source": str(payload.get("source") or ""),
+            "endpoint": str(payload.get("endpoint") or ""),
+            "start_time": int(payload.get("startTime") or 0),
+            "captured_at": time.time(),
+        }
+        with self.state_lock:
+            previous = self.live_by_id.get(live_id)
+            self.live_by_id[live_id] = record
+        if previous is None or previous.get("url") != url or previous.get("title") != record["title"]:
+            self._write(record)
+            ctx.log.info(
+                f"Captured live stream {live_id} from {payload.get('source')}:"
+                f"{payload.get('endpoint')}"
+            )
         return record
 
     # ----------------------------------------------------------------- helpers

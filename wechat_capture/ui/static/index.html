@@ -26,6 +26,11 @@
         <span>捕获队列</span>
         <em id="tab-captures"></em>
       </button>
+      <button type="button" data-tab="live">
+        <i data-lucide="video"></i>
+        <span>直播录制</span>
+        <em id="tab-live"></em>
+      </button>
       <button type="button" data-tab="library">
         <i data-lucide="check-check"></i>
         <span>下载完成</span>
@@ -140,6 +145,76 @@
       <span class="row-progress" hidden><span></span></span>
     </span>
   </button>
+</template>
+
+<template id="tpl-live-detail">
+  <article class="detail-card">
+    <div class="video-stage">
+      <video class="d-video" controls playsinline preload="metadata" hidden></video>
+      <div class="stage-empty live-stage">
+        <span class="live-mark" aria-hidden="true">
+          <i data-lucide="radio"></i>
+        </span>
+        <strong class="live-state-label">等待录制</strong>
+        <span class="stage-note">录制完成后在这里播放</span>
+        <div class="stage-progress" hidden><span></span></div>
+      </div>
+      <div class="stage-overlay">
+        <strong class="d-title"></strong>
+        <span class="d-author"></span>
+      </div>
+    </div>
+
+    <div class="detail-body">
+      <header class="d-header">
+        <div class="d-heading">
+          <span class="eyebrow">直播详情</span>
+          <strong class="d-title"></strong>
+        </div>
+        <span class="d-badge badge"></span>
+      </header>
+
+      <div class="progress-wrap live-progress" hidden>
+        <div class="progress-head">
+          <span class="progress-state"></span>
+          <span class="d-progress-text"></span>
+        </div>
+        <div class="progress-track"><span class="d-progress"></span></div>
+      </div>
+
+      <section class="finder-panel" aria-label="录制位置">
+        <div class="finder-toolbar">
+          <span class="finder-title">
+            <i data-lucide="folder-open"></i>
+            <span>录制位置</span>
+          </span>
+          <button class="live-reveal btn ghost" type="button">
+            <i data-lucide="search"></i>
+            <span>在 Finder 中显示</span>
+          </button>
+        </div>
+        <code class="finder-path" title=""></code>
+      </section>
+
+      <div class="actions">
+        <button class="live-record btn primary" type="button">
+          <i data-lucide="circle"></i>
+          <span>开始录制</span>
+        </button>
+        <button class="live-stop btn danger" type="button">
+          <i data-lucide="square"></i>
+          <span>停止录制</span>
+        </button>
+        <button class="live-open btn primary" type="button">
+          <i data-lucide="play"></i>
+          <span>播放视频</span>
+        </button>
+      </div>
+      <p class="d-hint"></p>
+
+      <footer class="d-meta live-meta"></footer>
+    </div>
+  </article>
 </template>
 
 <template id="tpl-detail">

@@ -139,6 +139,7 @@ def start_capture() -> tuple[subprocess.Popen | None, str]:
 
     mitmdump = find_binary("mitmdump")
     node = find_binary("node")
+    ffmpeg = find_binary("ffmpeg")
     missing = []
     if not mitmdump:
         missing.append("mitmproxy")
@@ -171,6 +172,7 @@ def start_capture() -> tuple[subprocess.Popen | None, str]:
             "WX_AUTO_FETCH": "0",
             "WX_AUTO_DECRYPT": "1",
             "WX_NODE_PATH": node,
+            "WX_FFMPEG_PATH": ffmpeg or "",
             "WX_CAPTURE_HOST": "127.0.0.1",
             "WX_CAPTURE_PORT": str(CAPTURE_PORT),
             "WX_PROXY_PORT": str(PROXY_PORT),
@@ -257,6 +259,7 @@ def main() -> int:
         print(f"service_ready={service_ready()}")
         print(f"mitmdump={find_binary('mitmdump') or ''}")
         print(f"node={find_binary('node') or ''}")
+        print(f"ffmpeg={find_binary('ffmpeg') or ''}")
         print(f"wasm_ready={wasm_ready()}")
         return 0 if service_ready() else 1
 

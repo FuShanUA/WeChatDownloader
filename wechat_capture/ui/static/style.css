@@ -791,6 +791,32 @@ button {
   transition: width 160ms ease-out;
 }
 
+.live-stage {
+  gap: 12px;
+}
+
+.live-mark {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border: 1px solid var(--primary-border);
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.live-mark svg {
+  width: 22px;
+  height: 22px;
+}
+
+.live-state-label {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 680;
+}
+
 .stage-overlay {
   position: absolute;
   top: 0;
@@ -1225,6 +1251,17 @@ button {
   background: transparent;
 }
 
+.btn.danger {
+  border-color: rgba(217, 45, 32, 0.42);
+  background: linear-gradient(180deg, #f06a5e, #d92d20);
+  color: #fff;
+}
+
+.btn.danger:hover {
+  border-color: #b42318;
+  background: linear-gradient(180deg, #e35b4f, #b42318);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -1236,6 +1273,12 @@ button {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.live-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px 14px;
 }
 
 .d-meta {
