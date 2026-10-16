@@ -18,6 +18,7 @@ WeChatDownloader 是一个 macOS 桌面应用，用于保存你在微信视频�
 ## 系统要求
 
 - macOS 13 或更新版本，已在 Apple Silicon 上测试
+- Windows 10/11 测试版支持，使用 WebView2
 - Homebrew 安装的依赖：
 
 ```bash
@@ -25,6 +26,12 @@ brew install mitmproxy node ffmpeg
 ```
 
 App 内置 Python 运行时和界面代码。首次下载时会从微信官方 CDN 获取解密用的 WASM 组件，保存在你自己的用户目录中，仓库不会分发这些组件。
+
+Windows 测试版需要另外安装 Python、Node.js、ffmpeg 和 mitmproxy。可以运行测试包里的 `install_windows_dependencies.ps1`，或手动安装后执行：
+
+```powershell
+python -m pip install --upgrade mitmproxy
+```
 
 ## 安装 Release 版
 
@@ -73,6 +80,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python build_wechat_app.py
 open dist/WeChatDownloader.app
+```
+
+Windows 构建需要在 Windows 上执行：
+
+```powershell
+python -m pip install -r requirements.txt
+python build_windows_app.py
 ```
 
 构建脚本会生成图标、PyInstaller spec 和 `dist/WeChatDownloader.app`。

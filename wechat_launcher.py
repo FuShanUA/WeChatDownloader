@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 import webview
 
@@ -22,6 +23,7 @@ import webview
 CAPTURE_PORT = 18765
 PROXY_PORT = 9090
 APP_NAME = "WeChatDownloader"
+IS_WINDOWS = sys.platform == "win32"
 
 
 def allow_autoplay_in_wkwebview() -> None:
@@ -78,7 +80,11 @@ def resource_path(relative: str) -> Path:
 
 
 HOME = Path.home()
-APP_SUPPORT = HOME / "Library" / "Application Support" / "OpenXiaZai"
+APP_SUPPORT = (
+    Path(os.environ.get("APPDATA", HOME / "AppData" / "Roaming")) / "OpenXiaZai"
+    if IS_WINDOWS
+    else HOME / "Library" / "Application Support" / "OpenXiaZai"
+)
 CAPTURE_FILE = APP_SUPPORT / "wechat-captures.jsonl"
 CAPTURE_TOKEN_PATH = APP_SUPPORT / "wechat_capture_token"
 WASM_DIR = APP_SUPPORT / "vendor" / "wechat_files" / "raw"
@@ -88,8 +94,13 @@ LOG_PATH = APP_SUPPORT / "wechat_downloader.log"
 
 def find_binary(name: str) -> str | None:
     candidates = []
-    local = resource_path(name)
+    executable_name = f"{name}.exe" if IS_WINDOWS else name
+    local = resource_path(executable_name)
     candidates.append(local)
+    if IS_WINDOWS:
+        candidates.append(Path(sys.prefix) / "Scripts" / executable_name)
+        candidates.append(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "nodejs" / executable_name)
+        candidates.append(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "FFmpeg" / "bin" / executable_name)
     candidates.append(Path("/opt/homebrew/bin") / name)
     candidates.append(Path("/usr/local/bin") / name)
     candidates.append(HOME / ".local" / "bin" / name)
@@ -117,7 +128,8 @@ def load_capture_token() -> str:
         token = ""
 
     if len(token) >= 32:
-        CAPTURE_TOKEN_PATH.chmod(0o600)
+        if not IS_WINDOWS:
+            CAPTURE_TOKEN_PATH.chmod(0o600)
         return token
 
     token = secrets.token_urlsafe(24)
@@ -128,7 +140,8 @@ def load_capture_token() -> str:
     )
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(token)
-    CAPTURE_TOKEN_PATH.chmod(0o600)
+    if not IS_WINDOWS:
+        CAPTURE_TOKEN_PATH.chmod(0o600)
     return token
 
 
@@ -194,6 +207,8 @@ def start_capture() -> tuple[subprocess.Popen | None, str]:
     if not node:
         missing.append("Node.js")
     if missing:
+        if IS_WINDOWS:
+            return None, "缺少：" + "、".join(missing) + "。请先安装 Python、Node.js，并运行 pip install mitmproxy"
         return None, "缺少：" + "、".join(missing) + "。请先执行 brew install mitmproxy node"
 
     ok, error = ensure_wasm(node)
@@ -231,6 +246,12 @@ def start_capture() -> tuple[subprocess.Popen | None, str]:
         [os.path.dirname(node), os.path.dirname(mitmdump), env.get("PATH", "")]
     )
 
+    popen_kwargs: dict[str, Any] = {}
+    if IS_WINDOWS:
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
     with LOG_PATH.open("ab", buffering=0) as log_handle:
         proc = subprocess.Popen(
             [
@@ -246,7 +267,7 @@ def start_capture() -> tuple[subprocess.Popen | None, str]:
             env=env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            **popen_kwargs,
         )
 
     deadline = time.time() + 20
@@ -263,17 +284,23 @@ def start_capture() -> tuple[subprocess.Popen | None, str]:
 def stop_process(proc: subprocess.Popen | None) -> None:
     if proc is None or proc.poll() is not None:
         return
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    if IS_WINDOWS:
+        proc.terminate()
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        if IS_WINDOWS:
+            proc.kill()
+        else:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -322,8 +349,9 @@ def main() -> int:
         stop_process(proc)
         os._exit(0)
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+    if not IS_WINDOWS:
+        signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
 
     allow_autoplay_in_wkwebview()
     webview.create_window(

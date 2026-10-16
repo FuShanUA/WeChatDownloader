@@ -45,10 +45,15 @@ import sys
 import threading
 import time
 import urllib.request
+import platform
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
+
+if platform.system() == "Windows":
+    import ctypes
+    import winreg
 
 from mitmproxy import ctx, http
 
@@ -244,6 +249,120 @@ class SystemProxyManager:
         _command(["networksetup", "-setwebproxystate", self.service, "on"])
         _command(["networksetup", "-setsecurewebproxystate", self.service, "on"])
         return True
+
+
+class WindowsSystemProxyManager:
+    """Temporarily route Windows WinINET traffic through this mitmproxy."""
+
+    _INTERNET_SETTINGS = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+
+    def __init__(self, proxy_port: int) -> None:
+        self.proxy_port = proxy_port
+        self.service = "WinINET"
+        self.original: dict[str, Any] = {}
+        self.changed = False
+
+    @staticmethod
+    def _refresh_wininet() -> None:
+        internet_option_settings_changed = 39
+        internet_option_refresh = 95
+        wininet = ctypes.windll.wininet
+        wininet.InternetSetOptionW(None, internet_option_settings_changed, None, 0)
+        wininet.InternetSetOptionW(None, internet_option_refresh, None, 0)
+
+    @classmethod
+    def _read_registry(cls) -> dict[str, Any]:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, cls._INTERNET_SETTINGS, 0, winreg.KEY_READ
+        ) as key:
+            values: dict[str, Any] = {}
+            for name in ("ProxyEnable", "ProxyServer", "ProxyOverride"):
+                try:
+                    value, value_type = winreg.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    continue
+                if name == "ProxyEnable":
+                    values[name] = bool(value)
+                else:
+                    values[name] = str(value or "")
+            values.setdefault("ProxyServer", "")
+            values.setdefault("ProxyOverride", "")
+            return values
+
+    @classmethod
+    def _write_registry(cls, values: dict[str, Any]) -> None:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, cls._INTERNET_SETTINGS, 0, winreg.KEY_WRITE
+        ) as key:
+            if "ProxyEnable" in values:
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, int(values["ProxyEnable"]))
+            if "ProxyServer" in values:
+                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, str(values["ProxyServer"]))
+            if "ProxyOverride" in values:
+                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, str(values["ProxyOverride"]))
+        cls._refresh_wininet()
+
+    @staticmethod
+    def _windows_bypass_domains() -> list[str]:
+        return [
+            "127.0.0.1",
+            "localhost",
+            "<local>",
+            "*.wxlivecdn.com",
+            "pull-m1.wxlivecdn.com",
+            "pull-r1.wxlivecdn.com",
+            "pull-x1.wxlivecdn.com",
+            "voipfinderliveplaythird.wxqcloud.qq.com",
+            "hw.flv.wxqcloud.qq.com",
+            "*.flv.wxqcloud.qq.com",
+        ]
+
+    def configure(self) -> None:
+        if os.environ.get("WX_DISABLE_SYSTEM_PROXY") == "1":
+            return
+        self.original = self._read_registry()
+        bypass = self._windows_bypass_domains()
+        original_override = self.original.get("ProxyOverride") or ""
+        if original_override:
+            bypass = [item for item in bypass if item not in original_override.split(";")]
+            bypass = original_override.split(";") + bypass
+        try:
+            self.changed = True
+            self._write_registry({
+                "ProxyEnable": True,
+                "ProxyServer": f"127.0.0.1:{self.proxy_port}",
+                "ProxyOverride": ";".join(bypass),
+            })
+        except Exception:
+            self.restore()
+            raise
+
+    def restore(self) -> None:
+        if not self.changed:
+            return
+        try:
+            self._write_registry(self.original)
+        finally:
+            self.changed = False
+
+    def ensure(self) -> bool:
+        if not self.changed:
+            return False
+        current = self._read_registry()
+        expected = {
+            "ProxyEnable": True,
+            "ProxyServer": f"127.0.0.1:{self.proxy_port}",
+        }
+        if all(current.get(name) == value for name, value in expected.items()):
+            return False
+        self.configure()
+        return True
+
+
+def _create_proxy_manager(proxy_port: int) -> SystemProxyManager | WindowsSystemProxyManager:
+    if platform.system() == "Windows":
+        return WindowsSystemProxyManager(proxy_port)
+    return SystemProxyManager(proxy_port)
 
 
 def _jsonable(value: Any) -> Any:
@@ -874,7 +993,7 @@ class WeChatCapture:
             self.proxy_port = int(listen_port)
         self._restore_live_captures()
         if os.environ.get("WX_DISABLE_SYSTEM_PROXY") != "1":
-            self.proxy_manager = SystemProxyManager(self.proxy_port)
+            self.proxy_manager = _create_proxy_manager(self.proxy_port)
             try:
                 self.proxy_manager.configure()
                 self._write({
