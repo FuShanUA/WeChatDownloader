@@ -872,6 +872,7 @@ class WeChatCapture:
         listen_port = getattr(getattr(ctx, "options", None), "listen_port", None)
         if listen_port:
             self.proxy_port = int(listen_port)
+        self._restore_live_captures()
         if os.environ.get("WX_DISABLE_SYSTEM_PROXY") != "1":
             self.proxy_manager = SystemProxyManager(self.proxy_port)
             try:
@@ -921,6 +922,57 @@ class WeChatCapture:
             "ui": self.ui_router is not None,
             "ui_version": getattr(self.ui_router, "version", 0) if self.ui_router else 0,
         })
+
+    def _restore_live_captures(self) -> None:
+        """Restore the latest joined live room after a downloader restart.
+
+        A live page calls joinLive when the room is entered, not on every
+        capture-service restart. Without this recovery the UI would show an
+        empty live list even while WeChat keeps playing the already-joined room.
+        """
+        if not self.output_path.exists():
+            return
+        latest: dict[str, Any] | None = None
+        try:
+            lines = self.output_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return
+        for line in reversed(lines):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                record.get("event") == "live"
+                and "pc_finderjoinlive" in str(record.get("endpoint") or "").lower()
+                and str(record.get("source") or "").lower() != "test"
+            ):
+                latest = record
+                break
+        if not latest:
+            return
+        live_id = str(latest.get("live_id") or "")
+        url = str(latest.get("url") or "")
+        if not live_id or not url.startswith(("http://", "https://")):
+            return
+        restored = {
+            "event": "live",
+            "live_id": live_id,
+            "title": str(latest.get("title") or ""),
+            "author": str(latest.get("author") or ""),
+            "url": url,
+            "source": str(latest.get("source") or ""),
+            "endpoint": str(latest.get("endpoint") or ""),
+            "start_time": int(latest.get("start_time") or 0),
+            "is_current": True,
+            "captured_at": float(latest.get("captured_at") or 0),
+        }
+        with self.state_lock:
+            self.live_by_id[live_id] = restored
+            self.current_live_id = live_id
+        ctx.log.info(
+            f"Restored current live {live_id} from {self.output_path.name}"
+        )
 
     def _load_ui_router(self) -> None:
         """Load work/ui/api.py when present; the addon works fine without it."""
