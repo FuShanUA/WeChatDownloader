@@ -12,6 +12,7 @@ on:
       - "scripts/windows_one_click.ps1"
       - "1-一键安装.bat"
       - "2-启动 WeChatDownloader.bat"
+      - "installer/wechatdownloader.iss"
       - "assets/wechat_downloader_icon.ico"
       - ".github/workflows/windows-build.yml"
 
@@ -33,6 +34,18 @@ jobs:
       - name: Build Windows executable
         run: python build_windows_app.py
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc "installer\wechatdownloader.iss"
+
       - name: Package Windows test bundle
         shell: pwsh
         run: |
@@ -48,4 +61,11 @@ jobs:
         with:
           name: WeChatDownloader-windows-test
           path: dist/WeChatDownloader-windows-test.zip
+          if-no-files-found: error
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeChatDownloader-windows-installer
+          path: dist/WeChatDownloader-Setup.exe
           if-no-files-found: error
