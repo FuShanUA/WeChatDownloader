@@ -992,6 +992,12 @@ class WeChatCapture:
             self.ui_router = None
 
     def done(self) -> None:
+        preview_manager = getattr(self.ui_router, "live_preview", None)
+        if preview_manager is not None:
+            try:
+                preview_manager.stop_all()
+            except Exception:
+                pass
         self.proxy_watchdog_stop.set()
         if self.proxy_watchdog_thread is not None:
             self.proxy_watchdog_thread.join(timeout=3)

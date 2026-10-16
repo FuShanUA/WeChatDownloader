@@ -368,4 +368,130 @@ class LiveRecordingManager:
         self.owner._write({"event": "live_recording", **payload})
 
 
-__all__ = ["LiveRecordingManager", "LiveTask", "ffmpeg_path"]
+class LivePreviewManager:
+    """One FFmpeg process per live room, exposed to the browser as HLS."""
+
+    def __init__(self, owner: Any) -> None:
+        self.owner = owner
+        self.lock = threading.RLock()
+        self._processes: dict[str, subprocess.Popen[str]] = {}
+        self._urls: dict[str, str] = {}
+        self._dirs: dict[str, Path] = {}
+
+    def playlist(self, live_id: str, url: str) -> Path:
+        with self.lock:
+            process = self._processes.get(live_id)
+            directory = self._dirs.get(live_id)
+            same_url = self._urls.get(live_id) == url
+            running = process is not None and process.poll() is None
+            playlist = directory / "index.m3u8" if directory else None
+            if running and same_url and playlist is not None and playlist.is_file():
+                return playlist
+
+            if process is not None:
+                self._stop_locked(live_id)
+            for other_id in list(self._processes):
+                if other_id != live_id:
+                    self._stop_locked(other_id)
+
+            binary = ffmpeg_path()
+            if not binary:
+                raise RuntimeError("未找到 ffmpeg，请先执行 brew install ffmpeg")
+            directory = self.owner.video_dir / ".live-preview" / safe_stem(live_id, "live")
+            if directory.exists():
+                shutil.rmtree(directory)
+            directory.mkdir(parents=True, exist_ok=True)
+            playlist = directory / "index.m3u8"
+            args = [
+                binary,
+                "-hide_banner",
+                "-loglevel", "error",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
+                "-user_agent", USER_AGENT,
+                "-i", url,
+                "-map", "0:v:0",
+                "-map", "0:a:0?",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-tune", "zerolatency",
+                "-vf", "scale=-2:360",
+                "-force_key_frames", "expr:gte(t,n_forced*1)",
+                "-c:a", "aac",
+                "-b:a", "96k",
+                "-f", "hls",
+                "-hls_time", "1",
+                "-hls_list_size", "3",
+                "-hls_flags", "delete_segments+omit_endlist+independent_segments",
+                "-hls_segment_filename", str(directory / "segment%05d.ts"),
+                str(playlist),
+            ]
+            process = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            self._processes[live_id] = process
+            self._urls[live_id] = url
+            self._dirs[live_id] = directory
+
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            try:
+                ready = "#EXTINF" in playlist.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                ready = False
+            if ready:
+                return playlist
+            with self.lock:
+                process = self._processes.get(live_id)
+            if process is None or process.poll() is not None:
+                break
+            time.sleep(0.1)
+        raise RuntimeError("直播预览启动超时")
+
+    def file(self, live_id: str, relative: str) -> tuple[Path, str] | None:
+        with self.lock:
+            directory = self._dirs.get(live_id)
+        if directory is None:
+            return None
+        if relative != "index.m3u8" and not re.fullmatch(r"segment\d+\.ts", relative):
+            return None
+        path = directory / relative
+        resolved = path.resolve()
+        if not resolved.is_relative_to(directory.resolve()) or not resolved.is_file():
+            return None
+        content_type = (
+            "application/vnd.apple.mpegurl"
+            if relative == "index.m3u8"
+            else "video/mp2t"
+        )
+        return resolved, content_type
+
+    def stop_all(self) -> None:
+        with self.lock:
+            for live_id in list(self._processes):
+                self._stop_locked(live_id)
+
+    def _stop_locked(self, live_id: str) -> None:
+        process = self._processes.pop(live_id, None)
+        self._urls.pop(live_id, None)
+        directory = self._dirs.get(live_id)
+        if directory is not None and directory.exists():
+            shutil.rmtree(directory, ignore_errors=True)
+            self._dirs.pop(live_id, None)
+        if process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+__all__ = ["LivePreviewManager", "LiveRecordingManager", "LiveTask", "ffmpeg_path"]

@@ -26,6 +26,8 @@ POST /api/lives/<id>/stop                stop the active live recording
 GET  /api/live-recordings/<id>/stream    recorded live MP4
 GET  /api/live-recordings/<id>/reveal    show the recording in Finder
 GET  /api/live-recordings/<id>/open      open with the default player
+GET  /api/lives/<id>/preview/index.m3u8  live preview playlist
+GET  /api/lives/<id>/preview/segment*.ts live preview segment
 POST /api/service                        {"enabled": true|false}
 POST /api/selftest                       run the decryptor's self-test
 """
@@ -50,7 +52,7 @@ from . import live as live_recording
 # Bumped whenever a UI behaviour changes. Exposed over the API and the SSE
 # hello frame so a stale browser tab or an un-restarted mitmdump can be
 # detected instead of silently showing wrong results.
-UI_VERSION = 14
+UI_VERSION = 15
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 JSON_TYPE = "application/json; charset=utf-8"
@@ -177,12 +179,14 @@ class Router:
         self.broadcaster = Broadcaster()
         self.downloads: dl.DownloadManager | None = None
         self.live: live_recording.LiveRecordingManager | None = None
+        self.live_preview: live_recording.LivePreviewManager | None = None
 
     # ------------------------------------------------------------- lifecycle
     def attach(self, owner: Any) -> None:
         self.owner = owner
         self.downloads = dl.DownloadManager(owner)
         self.live = live_recording.LiveRecordingManager(owner)
+        self.live_preview = live_recording.LivePreviewManager(owner)
         owner.event_sinks.append(self._on_capture_event)
 
     def _on_capture_event(self, record: dict[str, Any]) -> None:
@@ -279,8 +283,10 @@ class Router:
             live_match = self._live_route(route)
             if live_match:
                 live_id, action = live_match
-                if action == "preview":
-                    return self.live_preview(live_id)
+                if action == "preview/index.m3u8":
+                    return self.live_preview_playlist(live_id)
+                if action.startswith("preview/"):
+                    return self.live_preview_segment(live_id, action[len("preview/"):])
 
         if method == "POST":
             match = self._video_route(route)
@@ -630,61 +636,29 @@ class Router:
         response.status = result.status
         return response
 
-    def live_preview(self, live_id: str) -> Response:
+    def live_preview_playlist(self, live_id: str) -> Response:
         with self.owner.state_lock:
             live = dict(self.owner.live_by_id.get(live_id) or {})
         url = str(live.get("url") or "")
         if not live or not url:
             return Response.error(404, "live stream not found")
-        binary = live_recording.ffmpeg_path()
-        if not binary:
-            return Response.error(500, "ffmpeg is unavailable")
+        try:
+            playlist = self.live_preview.playlist(live_id, url)
+        except RuntimeError as exc:
+            return Response.error(500, str(exc))
+        return Response(
+            200,
+            playlist.read_bytes(),
+            "application/vnd.apple.mpegurl",
+            {"Cache-Control": "no-store, no-transform"},
+        )
 
-        args = [
-            binary,
-            "-hide_banner",
-            "-loglevel", "error",
-            "-reconnect", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5",
-            "-user_agent", live_recording.USER_AGENT,
-            "-i", url,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c", "copy",
-            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-            "-f", "mp4",
-            "pipe:1",
-        ]
-
-        def body() -> Any:
-            process = subprocess.Popen(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-            assert process.stdout is not None
-            try:
-                while True:
-                    chunk = process.stdout.read1(64 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
-            finally:
-                if process.poll() is None:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=5)
-                process.stdout.close()
-
-        return StreamResponse(body(), "video/mp4", {
-            "Cache-Control": "no-store, no-transform",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        })
+    def live_preview_segment(self, live_id: str, relative: str) -> Response:
+        found = self.live_preview.file(live_id, relative)
+        if found is None:
+            return Response.error(404, "live preview segment not found")
+        path, content_type = found
+        return Response(200, path.read_bytes(), content_type)
 
     def _live_output_path(self, task_id: str) -> Path | None:
         task = self.live.get(task_id)

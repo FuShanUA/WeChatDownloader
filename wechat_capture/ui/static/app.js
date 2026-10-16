@@ -11,7 +11,7 @@
 // Must match UI_VERSION in api.py. A mismatch means the tab is running an old
 // script against a newer backend (or the reverse), which silently produces
 // wrong results — so it reloads instead.
-const APP_VERSION = 14;
+const APP_VERSION = 15;
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -32,6 +32,7 @@ const state = {
   qualityChoices: {},
   previewRequests: {},
   serviceBusy: false,
+  liveInitialized: false,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -648,7 +649,7 @@ function renderLiveDetail() {
   if (live.is_current && live.url) {
     videoEl.hidden = false;
     stageEmpty.hidden = true;
-    videoEl.src = `/api/lives/${encodeURIComponent(live.live_id)}/preview`;
+    videoEl.src = `/api/lives/${encodeURIComponent(live.live_id)}/preview/index.m3u8`;
     videoEl.autoplay = true;
     videoEl.muted = true;
   } else if (task?.state === 'done' && task.output_exists) {
@@ -963,14 +964,35 @@ async function loadTasks() {
 
 async function loadLives() {
   const payload = await api('/api/lives');
-  state.lives = payload.lives || [];
+  const lives = payload.lives || [];
+  const previousCurrent = state.lives.find((live) => live.is_current)?.live_id;
+  const signature = JSON.stringify(lives.map((live) => [
+    live.live_id,
+    live.is_current,
+    live.task?.id,
+    live.task?.state,
+  ]));
+  const previousSignature = JSON.stringify(state.lives.map((live) => [
+    live.live_id,
+    live.is_current,
+    live.task?.id,
+    live.task?.state,
+  ]));
+  state.lives = lives;
   const current = state.lives.find((live) => live.is_current);
+  const currentChanged = Boolean(current && current.live_id !== previousCurrent);
   if (current) {
     state.selectedLive = current.live_id;
   } else if (!state.selectedLive || !liveById(state.selectedLive)) {
     state.selectedLive = state.lives[0]?.live_id || null;
   }
-  render();
+  if ((currentChanged || !state.liveInitialized) && current) {
+    state.tab = 'live';
+  }
+  state.liveInitialized = true;
+  if (signature !== previousSignature) {
+    render();
+  }
 }
 
 async function recordLive(liveId) {
@@ -998,6 +1020,12 @@ async function stopLive(liveId) {
     render();
   }
 }
+
+setInterval(() => {
+  if (document.visibilityState === 'visible') {
+    loadLives().catch(() => {});
+  }
+}, 2000);
 
 async function download(fileKey, quality, { preview = false } = {}) {
   if (preview) state.previewRequests[fileKey] = quality;
