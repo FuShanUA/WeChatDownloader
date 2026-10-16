@@ -76,6 +76,21 @@ HTML_HOST_SUFFIXES = (".channels.weixin.qq.com",)
 MAX_VIDEO_BYTES = int(os.environ.get("WX_MAX_VIDEO_BYTES", str(512 * 1024 * 1024)))
 MAX_PENDING_VIDEOS = int(os.environ.get("WX_MAX_PENDING_VIDEOS", "6"))
 
+# Long-lived live media must not be routed through the capture proxy. The page
+# APIs on channels.weixin.qq.com still use the proxy, so capture is unaffected.
+PROXY_BYPASS_DOMAINS = (
+    "127.0.0.1",
+    "localhost",
+    "*.local",
+    "*.wxlivecdn.com",
+    "pull-m1.wxlivecdn.com",
+    "pull-r1.wxlivecdn.com",
+    "pull-x1.wxlivecdn.com",
+    "voipfinderliveplaythird.wxqcloud.qq.com",
+    "hw.flv.wxqcloud.qq.com",
+    "*.flv.wxqcloud.qq.com",
+)
+
 
 def _command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, check=check, capture_output=True, text=True)
@@ -87,7 +102,7 @@ class SystemProxyManager:
     def __init__(self, proxy_port: int) -> None:
         self.proxy_port = proxy_port
         self.service = os.environ.get("WX_PROXY_SERVICE") or self._detect_service()
-        self.original: dict[str, dict[str, str | bool]] = {}
+        self.original: dict[str, Any] = {}
         self.changed = False
 
     @staticmethod
@@ -129,6 +144,23 @@ class SystemProxyManager:
         values.setdefault("port", "0")
         return values
 
+    @staticmethod
+    def _read_proxy_bypass(service: str) -> list[str]:
+        result = _command(["networksetup", "-getproxybypassdomains", service])
+        return [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip() and not line.startswith("There aren't")
+        ]
+
+    def _expected_bypass_domains(self) -> list[str]:
+        original = self.original.get("bypass")
+        domains = list(original) if isinstance(original, list) else []
+        for domain in PROXY_BYPASS_DOMAINS:
+            if domain not in domains:
+                domains.append(domain)
+        return domains
+
     def configure(self) -> None:
         if os.environ.get("WX_DISABLE_SYSTEM_PROXY") == "1":
             return
@@ -137,8 +169,14 @@ class SystemProxyManager:
         self.original = {
             "web": self._read_proxy(self.service, "web"),
             "secure": self._read_proxy(self.service, "secureweb"),
+            "bypass": self._read_proxy_bypass(self.service),
         }
         try:
+            self.changed = True
+            _command([
+                "networksetup", "-setproxybypassdomains", self.service,
+                *self._expected_bypass_domains(),
+            ])
             _command(["networksetup", "-setwebproxy", self.service, "127.0.0.1", str(self.proxy_port)])
             _command(["networksetup", "-setsecurewebproxy", self.service, "127.0.0.1", str(self.proxy_port)])
             _command(["networksetup", "-setwebproxystate", self.service, "on"])
@@ -152,6 +190,15 @@ class SystemProxyManager:
         if not self.changed:
             return
         for kind, state in self.original.items():
+            if kind == "bypass":
+                domains = list(state) if isinstance(state, list) else []
+                if not domains:
+                    domains = [""]
+                _command(
+                    ["networksetup", "-setproxybypassdomains", self.service, *domains],
+                    check=False,
+                )
+                continue
             if kind == "web":
                 set_proxy = "-setwebproxy"
                 set_state = "-setwebproxystate"
@@ -179,13 +226,19 @@ class SystemProxyManager:
             "web": self._read_proxy(self.service, "web"),
             "secure": self._read_proxy(self.service, "secureweb"),
         }
+        expected_bypass = set(self._expected_bypass_domains())
+        current_bypass = set(self._read_proxy_bypass(self.service))
         healthy = all(
             state.get("enabled")
             and (state.get("server"), state.get("port")) == expected
             for state in current.values()
-        )
+        ) and expected_bypass.issubset(current_bypass)
         if healthy:
             return False
+        _command([
+            "networksetup", "-setproxybypassdomains", self.service,
+            *self._expected_bypass_domains(),
+        ])
         _command(["networksetup", "-setwebproxy", self.service, *expected])
         _command(["networksetup", "-setsecurewebproxy", self.service, *expected])
         _command(["networksetup", "-setwebproxystate", self.service, "on"])
