@@ -11,7 +11,7 @@
 // Must match UI_VERSION in api.py. A mismatch means the tab is running an old
 // script against a newer backend (or the reverse), which silently produces
 // wrong results — so it reloads instead.
-const APP_VERSION = 12;
+const APP_VERSION = 14;
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -431,13 +431,14 @@ function renderLiveList() {
     }
 
     const badge = $('.row-badge', node);
-    badge.textContent = liveStateLabel(task);
+    badge.textContent = live.is_current && !task ? '当前直播' : liveStateLabel(task);
     badge.className = `row-badge badge ${task?.state === 'failed' ? 'bad' : task?.state === 'done' ? 'ok' : task ? 'busy' : ''}`;
 
     const meta = [
+      live.is_current ? '当前直播' : '',
       `开播 ${formatTimestamp(live.start_time) || '未知'}`,
       `捕获 ${formatTimestamp(live.captured_at) || '刚刚'}`,
-    ];
+    ].filter(Boolean);
     $('.row-meta', node).textContent = meta.filter(Boolean).join(' · ');
     return node;
   }));
@@ -635,7 +636,7 @@ function renderLiveDetail() {
   $('.d-author', node).textContent = live.author || shortKey(live.live_id);
 
   const badge = $('.d-badge', node);
-  badge.textContent = liveStateLabel(task);
+  badge.textContent = live.is_current && !task ? '当前直播' : liveStateLabel(task);
   badge.className = `d-badge badge ${task?.state === 'failed' ? 'bad' : task?.state === 'done' ? 'ok' : task ? 'busy' : ''}`;
 
   const videoEl = $('.d-video', node);
@@ -644,13 +645,23 @@ function renderLiveDetail() {
   const stageNote = $('.stage-note', node);
   const stageProgress = $('.stage-progress', node);
   const stageBar = $('span', stageProgress);
-  if (task?.state === 'done' && task.output_exists) {
+  if (live.is_current && live.url) {
+    videoEl.hidden = false;
+    stageEmpty.hidden = true;
+    videoEl.src = `/api/lives/${encodeURIComponent(live.live_id)}/preview`;
+    videoEl.autoplay = true;
+    videoEl.muted = true;
+  } else if (task?.state === 'done' && task.output_exists) {
     videoEl.hidden = false;
     stageEmpty.hidden = true;
     videoEl.src = `/api/live-recordings/${encodeURIComponent(task.id)}/stream`;
+    videoEl.autoplay = false;
+    videoEl.muted = false;
   } else {
     videoEl.hidden = true;
     videoEl.removeAttribute('src');
+    videoEl.autoplay = false;
+    videoEl.muted = false;
     stageEmpty.hidden = false;
     stateLabel.textContent = liveStateLabel(task);
     stageNote.textContent = task?.state === 'failed'
@@ -719,6 +730,9 @@ function renderLiveDetail() {
 
   detail.replaceChildren(node);
   refreshIcons();
+  if (live.is_current && live.url) {
+    videoEl.play().catch(() => {});
+  }
 }
 
 function downloadedVariants(video) {
@@ -950,7 +964,10 @@ async function loadTasks() {
 async function loadLives() {
   const payload = await api('/api/lives');
   state.lives = payload.lives || [];
-  if (!state.selectedLive || !liveById(state.selectedLive)) {
+  const current = state.lives.find((live) => live.is_current);
+  if (current) {
+    state.selectedLive = current.live_id;
+  } else if (!state.selectedLive || !liveById(state.selectedLive)) {
     state.selectedLive = state.lives[0]?.live_id || null;
   }
   render();

@@ -376,7 +376,8 @@ BOOTSTRAP_TEMPLATE = r"""
 
   function captureLive(source, endpoint, node, context) {
     var url = liveCdnUrl(node);
-    if (!url) return;
+    var endpointName = String(endpoint || '');
+    if (!url || endpointName.indexOf('pc_finderjoinlive') < 0) return;
     var info = node.liveInfo || node.live_info || {};
     var liveId = String(info.liveId || info.live_id || node.liveId || node.live_id || '');
     if (!liveId) liveId = 'url-' + url.slice(0, 120);
@@ -779,6 +780,7 @@ class WeChatCapture:
         # decrypts the bytes the client actually fetched.
         self.media_by_file_key: dict[str, list[dict[str, Any]]] = {}
         self.live_by_id: dict[str, dict[str, Any]] = {}
+        self.current_live_id: str | None = None
         self.assemblers: dict[str, VideoAssembler] = {}
         self.pending_completed: list[VideoAssembler] = []
         self.saved_files: set[str] = set()
@@ -1707,12 +1709,16 @@ class WeChatCapture:
 
     def accept_live(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = str(payload.get("url") or "")
+        endpoint = str(payload.get("endpoint") or "")
         if not url.startswith(("http://", "https://")):
             self._write({
                 "event": "live_invalid",
                 "reason": "live_cdn_url_missing",
                 "live_keys": list(payload.keys()),
             })
+            return payload
+        if "pc_finderjoinlive" not in endpoint.lower():
+            self._count("live_recommendation_ignored")
             return payload
 
         live_id = str(payload.get("liveId") or "")
@@ -1726,13 +1732,15 @@ class WeChatCapture:
             "author": str(payload.get("author") or ""),
             "url": url,
             "source": str(payload.get("source") or ""),
-            "endpoint": str(payload.get("endpoint") or ""),
+            "endpoint": endpoint,
             "start_time": int(payload.get("startTime") or 0),
+            "is_current": True,
             "captured_at": time.time(),
         }
         with self.state_lock:
             previous = self.live_by_id.get(live_id)
             self.live_by_id[live_id] = record
+            self.current_live_id = live_id
         if previous is None or previous.get("url") != url or previous.get("title") != record["title"]:
             self._write(record)
             ctx.log.info(

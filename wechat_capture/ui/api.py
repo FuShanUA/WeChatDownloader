@@ -50,7 +50,7 @@ from . import live as live_recording
 # Bumped whenever a UI behaviour changes. Exposed over the API and the SSE
 # hello frame so a stale browser tab or an un-restarted mitmdump can be
 # detected instead of silently showing wrong results.
-UI_VERSION = 12
+UI_VERSION = 14
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 JSON_TYPE = "application/json; charset=utf-8"
@@ -109,12 +109,17 @@ class StreamResponse(Response):
         return items
 
     def stream_to(self, wfile: Any) -> None:
-        for chunk in self.generator:
-            try:
-                wfile.write(chunk)
-                wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                return
+        try:
+            for chunk in self.generator:
+                try:
+                    wfile.write(chunk)
+                    wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+        finally:
+            close = getattr(self.generator, "close", None)
+            if callable(close):
+                close()
 
 
 class Broadcaster:
@@ -270,6 +275,12 @@ class Router:
                     return self.live_reveal(task_id)
                 if action == "open":
                     return self.live_open(task_id)
+
+            live_match = self._live_route(route)
+            if live_match:
+                live_id, action = live_match
+                if action == "preview":
+                    return self.live_preview(live_id)
 
         if method == "POST":
             match = self._video_route(route)
@@ -497,34 +508,46 @@ class Router:
         owner = self.owner
         with owner.state_lock:
             lives = [dict(item) for item in owner.live_by_id.values()]
+            current_live_id = owner.current_live_id
         tasks_by_live: dict[str, list[dict[str, Any]]] = {}
         for task in self.live.all():
             tasks_by_live.setdefault(task["live_id"], []).append(task)
+
+        visible: dict[str, dict[str, Any]] = {}
         for item in lives:
-            tasks = tasks_by_live.get(item["live_id"]) or []
-            item["task"] = tasks[-1] if tasks else None
+            item["is_current"] = item["live_id"] == current_live_id
+            if item["is_current"]:
+                visible[item["live_id"]] = item
+
         for live_id, tasks in tasks_by_live.items():
-            if any(item["live_id"] == live_id for item in lives):
-                continue
             latest = tasks[-1]
-            lives.append({
-                "live_id": live_id,
-                "title": latest.get("title") or "",
-                "author": latest.get("author") or "",
-                "url": "",
-                "source": "",
-                "endpoint": "",
-                "start_time": 0,
-                "captured_at": latest.get("started"),
-                "task": latest,
-            })
-        lives.sort(
-            key=lambda item: item.get("captured_at")
-            or (item.get("task") or {}).get("started")
-            or 0,
+            item = visible.get(live_id)
+            if item is None:
+                item = {
+                    "live_id": live_id,
+                    "title": latest.get("title") or "",
+                    "author": latest.get("author") or "",
+                    "url": "",
+                    "source": "",
+                    "endpoint": "",
+                    "start_time": 0,
+                    "captured_at": latest.get("started"),
+                    "is_current": live_id == current_live_id,
+                }
+                visible[live_id] = item
+            item["task"] = latest
+
+        result = list(visible.values())
+        result.sort(
+            key=lambda item: (
+                bool(item.get("is_current")),
+                item.get("captured_at")
+                or (item.get("task") or {}).get("started")
+                or 0,
+            ),
             reverse=True,
         )
-        return lives
+        return result
 
     # ------------------------------------------------------------ API: files
     def stream(self, file_key: str, variant: str, headers: dict[str, str]) -> Response:
@@ -606,6 +629,62 @@ class Router:
         response = StreamResponse(body(), content_type, result.headers)
         response.status = result.status
         return response
+
+    def live_preview(self, live_id: str) -> Response:
+        with self.owner.state_lock:
+            live = dict(self.owner.live_by_id.get(live_id) or {})
+        url = str(live.get("url") or "")
+        if not live or not url:
+            return Response.error(404, "live stream not found")
+        binary = live_recording.ffmpeg_path()
+        if not binary:
+            return Response.error(500, "ffmpeg is unavailable")
+
+        args = [
+            binary,
+            "-hide_banner",
+            "-loglevel", "error",
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+            "-user_agent", live_recording.USER_AGENT,
+            "-i", url,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c", "copy",
+            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+            "-f", "mp4",
+            "pipe:1",
+        ]
+
+        def body() -> Any:
+            process = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            assert process.stdout is not None
+            try:
+                while True:
+                    chunk = process.stdout.read1(64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                process.stdout.close()
+
+        return StreamResponse(body(), "video/mp4", {
+            "Cache-Control": "no-store, no-transform",
+            "Connection": "close",
+            "X-Accel-Buffering": "no",
+        })
 
     def _live_output_path(self, task_id: str) -> Path | None:
         task = self.live.get(task_id)
