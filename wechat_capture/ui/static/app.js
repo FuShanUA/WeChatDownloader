@@ -11,7 +11,7 @@
 // Must match UI_VERSION in api.py. A mismatch means the tab is running an old
 // script against a newer backend (or the reverse), which silently produces
 // wrong results — so it reloads instead.
-const APP_VERSION = 15;
+const APP_VERSION = 17;
 
 // ---------------------------------------------------------------- state
 const state = {
@@ -652,6 +652,10 @@ function renderLiveDetail() {
     videoEl.src = `/api/lives/${encodeURIComponent(live.live_id)}/preview/index.m3u8`;
     videoEl.autoplay = true;
     videoEl.muted = true;
+    videoEl.addEventListener('canplay', () => {
+      videoEl.play().catch(() => {});
+    });
+    videoEl.load();
   } else if (task?.state === 'done' && task.output_exists) {
     videoEl.hidden = false;
     stageEmpty.hidden = true;

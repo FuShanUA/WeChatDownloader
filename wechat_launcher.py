@@ -24,6 +24,54 @@ PROXY_PORT = 9090
 APP_NAME = "WeChatDownloader"
 
 
+def allow_autoplay_in_wkwebview() -> None:
+    """Let the live preview start without a user gesture.
+
+    pywebview leaves WKWebView's default media policy in place, which can pause
+    muted autoplay. The live preview is local and user-initiated by opening a
+    live room, so programmatic playback is safe here.
+    """
+    try:
+        from webview.platforms import cocoa
+        original_webkit = cocoa.WebKit
+        original_configuration = original_webkit.WKWebViewConfiguration
+
+        class ConfigurationBuilder:
+            def __init__(self, configuration):
+                self.configuration = configuration
+
+            def init(self):
+                return self.configuration
+
+        class AutoplayConfiguration:
+            @classmethod
+            def alloc(cls):
+                configuration = original_configuration.alloc().init()
+                configuration.setMediaTypesRequiringUserActionForPlayback_(0)
+                return ConfigurationBuilder(configuration)
+
+        class WebKitProxy:
+            def __init__(self, original):
+                self.original = original
+                self.WKWebViewConfiguration = AutoplayConfiguration
+
+            def __getattr__(self, name):
+                return getattr(self.original, name)
+
+        original_init = cocoa.BrowserView.__init__
+
+        def autoplay_init(self, window):
+            cocoa.WebKit = WebKitProxy(original_webkit)
+            try:
+                original_init(self, window)
+            finally:
+                cocoa.WebKit = original_webkit
+
+        cocoa.BrowserView.__init__ = autoplay_init
+    except Exception:
+        pass
+
+
 def resource_path(relative: str) -> Path:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     return base / relative
@@ -277,6 +325,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
+    allow_autoplay_in_wkwebview()
     webview.create_window(
         APP_NAME,
         f"http://127.0.0.1:{CAPTURE_PORT}/",
@@ -284,6 +333,7 @@ def main() -> int:
         height=780,
         min_size=(900, 600),
     )
+
     webview.start()
     return 0
 
