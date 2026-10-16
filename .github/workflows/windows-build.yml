@@ -9,6 +9,9 @@ on:
       - "wechat_capture/**"
       - "wechat_launcher.py"
       - "build_windows_app.py"
+      - "scripts/windows_one_click.ps1"
+      - "1-一键安装.bat"
+      - "2-启动 WeChatDownloader.bat"
       - "assets/wechat_downloader_icon.ico"
       - ".github/workflows/windows-build.yml"
 
@@ -36,7 +39,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/package | Out-Null
           Copy-Item dist/WeChatDownloader.exe dist/package/
           Copy-Item WINDOWS_TEST.md dist/package/
-          Copy-Item scripts/install_windows_dependencies.ps1 dist/package/
+          Copy-Item 1-一键安装.bat dist/package/
+          Copy-Item 2-启动 WeChatDownloader.bat dist/package/
+          New-Item -ItemType Directory -Force -Path dist/package/scripts | Out-Null
+          Copy-Item scripts/windows_one_click.ps1 dist/package/scripts/
           Compress-Archive -Path dist/package/* -DestinationPath dist/WeChatDownloader-windows-test.zip -Force
 
       - name: Upload Windows test bundle

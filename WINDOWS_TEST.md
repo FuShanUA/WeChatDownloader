@@ -2,32 +2,28 @@
 
 这是一个测试版 Windows 包，用于验证视频号捕获和直播录制链路。
 
-## 安装依赖
-
-1. 安装 Python 3.11 或 3.12。
-2. 安装 Node.js LTS。
-3. 安装 ffmpeg，并确保 `ffmpeg.exe` 在 `PATH` 中。
-4. 在 Python 环境中安装 mitmproxy：
-
-```powershell
-python -m pip install --upgrade mitmproxy
-```
-
-也可以直接运行包里的 `install_windows_dependencies.ps1`。
-
-## 运行
+## 傻瓜式安装
 
 1. 解压测试包。
-2. 双击 `WeChatDownloader.exe`。
-3. 首次运行会生成 mitmproxy 证书。
-4. 打开 Windows 证书管理器，导入：
+2. 双击 `1-一键安装.bat`。
+3. 等待安装完成。
+4. 完全退出微信后重新打开。
+5. 双击桌面上的 `WeChatDownloader`，或运行 `2-启动 WeChatDownloader.bat`。
 
-```text
-%USERPROFILE%\.mitmproxy\mitmproxy-ca-cert.cer
-```
+不需要打开终端，也不需要手动输入命令。
 
-5. 将证书放入“受信任的根证书颁发机构”，并信任它。
-6. 完全退出微信后重新打开微信，再进入视频号页面。
+`1-一键安装.bat` 会自动完成：
+
+- 安装 Python
+- 安装 Node.js
+- 安装 ffmpeg
+- 安装 mitmproxy
+- 生成并导入 mitmproxy 证书
+- 创建桌面快捷方式
+
+如果 Windows 弹出安全确认，请选择“允许”或“是”。
+
+如果安装失败，可以右键 `1-一键安装.bat`，选择“以管理员身份运行”再试一次。
 
 ## 测试点
 

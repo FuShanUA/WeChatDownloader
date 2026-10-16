@@ -208,7 +208,7 @@ def start_capture() -> tuple[subprocess.Popen | None, str]:
         missing.append("Node.js")
     if missing:
         if IS_WINDOWS:
-            return None, "缺少：" + "、".join(missing) + "。请先安装 Python、Node.js，并运行 pip install mitmproxy"
+            return None, "缺少：" + "、".join(missing) + "。请先双击 1-一键安装.bat"
         return None, "缺少：" + "、".join(missing) + "。请先执行 brew install mitmproxy node"
 
     ok, error = ensure_wasm(node)
